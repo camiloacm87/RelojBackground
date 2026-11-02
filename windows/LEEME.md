@@ -6,10 +6,16 @@ Incluye **alarmas** (un despertador animado que suena) y un **cronómetro** que 
 También puede mostrar una imagen GIF animada o un PNG con transparencia.
 
 ## Instalar
-1. Copia `RelojBackground.exe` a una carpeta fija (por ejemplo `C:\Users\<tu usuario>\RelojBackground`) y ábrelo con doble clic.
-   Si en esa carpeta hay un `config.ini`, la app guarda ahí su configuración (así puedes llevarla a otra PC); si no, la guarda en `%LOCALAPPDATA%\RelojBackground`.
-2. La primera vez se crea el acceso **RelojBackground** en el **menú Inicio** (abrirlo desde ahí muestra la configuración).
-3. Si quieres que arranque con Windows, activa **Iniciar con Windows** en la configuración.
+
+**Con el instalador (recomendado):** abre `RelojBackground-Setup.exe` y pulsa **Instalar**.
+- Se instala solo para tu usuario, sin permisos de administrador, en `%LOCALAPPDATA%\Programs\RelojBackground`.
+- Crea el acceso **RelojBackground** en el menú Inicio y, si lo eliges, en el escritorio; también puede iniciar con Windows.
+- Para actualizar, abre el instalador de la versión nueva: conserva tu configuración y tus alarmas.
+- Para quitarla: **Configuración → Aplicaciones → Aplicaciones instaladas → RelojBackground → Desinstalar**.
+
+**Sin instalar (portátil):** copia `RelojBackground.exe` a una carpeta fija y ábrelo con doble clic.
+Si en esa carpeta hay un `config.ini`, la app guarda ahí su configuración (así puedes llevarla a otra PC);
+si no, la guarda en `%LOCALAPPDATA%\RelojBackground`. La primera vez crea el acceso del menú Inicio.
 
 Si tenías la versión anterior ("Overlay"), la nueva trae su configuración y ocupa su lugar en el inicio de Windows.
 

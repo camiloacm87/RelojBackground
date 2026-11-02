@@ -5,6 +5,18 @@ completa) y **no captura el ratón ni el teclado**. Incluye **alarmas** (un desp
 suena) y un **cronómetro** que aparece debajo del reloj. Vive en la **barra de menús** y no ocupa
 sitio en el Dock. Requiere macOS 11 Big Sur o superior.
 
+## Instalar desde GitHub (lo más fácil)
+Descarga **RelojBackground.pkg** desde https://github.com/camiloacm87/RelojBackground/releases/latest,
+haz **clic derecho → Abrir** (la primera vez, porque no está firmado por Apple) y sigue el asistente.
+La app queda en Aplicaciones y en Launchpad. También está **RelojBackground.dmg** (arrastrar a Aplicaciones).
+
+Para crear tú mismo el instalador con asistente (.pkg):
+```
+cd ~/Downloads/RelojBackground-Mac
+chmod +x compilar.sh crear-pkg.sh
+./crear-pkg.sh
+```
+
 ## 1. Crear el instalador .dmg (una sola vez)
 
 1. Abre **Terminal** e instala las herramientas gratuitas de Apple si no las tienes:

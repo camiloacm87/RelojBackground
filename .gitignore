@@ -1,6 +1,7 @@
 # Archivos generados al compilar (se publican en Releases, no en el código)
 *.exe
 *.dmg
+*.pkg
 *.zip
 mac/*.app
 mac/RelojBackground-*

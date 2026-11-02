@@ -41,16 +41,21 @@
 ## Instalación
 
 ### Windows (10 y 11)
-1. Descarga `RelojBackground-Windows.zip` desde [Releases](https://github.com/camiloacm87/RelojBackground/releases/latest).
-2. Descomprímelo en una carpeta fija (por ejemplo `C:\Users\<tu usuario>\RelojBackground`) y abre `RelojBackground.exe`.
-3. Se crea el acceso **RelojBackground** en el menú Inicio. Activa *Iniciar con Windows* en la configuración si lo quieres al encender la PC.
+1. Descarga **`RelojBackground-Setup.exe`** desde [Releases](https://github.com/camiloacm87/RelojBackground/releases/latest).
+2. Ábrelo y pulsa **Instalar**. Puedes elegir crear un acceso en el escritorio, iniciar con Windows y abrir la app al terminar.
+3. Se instala solo para tu usuario (sin permisos de administrador), con acceso en el menú Inicio.
+   Para quitarla: **Configuración → Aplicaciones → Aplicaciones instaladas → RelojBackground → Desinstalar**.
 
-Windows puede mostrar un aviso de SmartScreen porque la app no está firmada: **Más información → Ejecutar de todas formas**.
+Windows puede mostrar un aviso de SmartScreen porque el instalador no está firmado: **Más información → Ejecutar de todas formas**.
+
+¿Sin instalar? Descarga `RelojBackground-Windows-portable.zip`, descomprímelo y abre `RelojBackground.exe`.
 
 ### macOS (11 Big Sur o superior, Apple Silicon e Intel)
-1. Descarga `RelojBackground.dmg` desde [Releases](https://github.com/camiloacm87/RelojBackground/releases/latest).
-2. Ábrelo y arrastra **RelojBackground** a **Aplicaciones**.
-3. La primera vez: clic derecho sobre la app → **Abrir** (no está firmada por Apple).
+1. Descarga **`RelojBackground.pkg`** desde [Releases](https://github.com/camiloacm87/RelojBackground/releases/latest).
+2. La primera vez: clic derecho sobre el archivo → **Abrir** (no está firmado por Apple) y sigue el asistente.
+3. La app queda en **Aplicaciones** y en Launchpad.
+
+También está `RelojBackground.dmg`: ábrelo y arrastra **RelojBackground** a **Aplicaciones**.
 
 ## Uso
 
@@ -68,23 +73,26 @@ Desde la línea de comandos: `--config`, `--alternar`, `--mostrar`, `--ocultar`,
 
 ## Compilar desde el código
 
-**Windows:** ejecuta `windows\compilar.bat`. Usa el compilador de C# que ya trae Windows (.NET Framework 4); no hay que instalar nada.
+**Windows:** ejecuta `windows\compilar.bat`. Genera `RelojBackground.exe` y el instalador `RelojBackground-Setup.exe`
+con el compilador de C# que ya trae Windows (.NET Framework 4); no hay que instalar nada.
 
 **macOS:** con las herramientas de Apple (`xcode-select --install`):
 ```bash
 cd mac
-chmod +x compilar.sh crear-dmg.sh
-./crear-dmg.sh --universal
+chmod +x compilar.sh crear-dmg.sh crear-pkg.sh
+./crear-pkg.sh --universal   # instalador con asistente (.pkg)
+./crear-dmg.sh --universal   # imagen para arrastrar a Aplicaciones (.dmg)
 ```
 
-**Automático en GitHub:** cada cambio subido a `main` compila el `.exe` y el `.dmg` (pestaña **Actions**).
-Al publicar una etiqueta de versión (`v2.1`, `v3.0`, …) se crea una **Release** con los dos instaladores adjuntos.
+**Automático en GitHub:** cada cambio subido a `main` compila todo (pestaña **Actions**).
+Al publicar una etiqueta de versión (`v2.1`, `v3.0`, …) se crea una **Release** con los instaladores adjuntos:
+`RelojBackground-Setup.exe`, `RelojBackground-Windows-portable.zip`, `RelojBackground.pkg` y `RelojBackground.dmg`.
 
 ## Estructura
 
 ```
-windows/   Código de Windows (C# / Windows Forms): RelojBackground.cs, Configuracion.cs, compilar.bat
-mac/       Código de macOS (Swift / AppKit / SwiftUI), icono y scripts para crear la app y el .dmg
+windows/   Código de Windows (C# / Windows Forms): RelojBackground.cs, Configuracion.cs, Instalador.cs, compilar.bat
+mac/       Código de macOS (Swift / AppKit / SwiftUI), icono y scripts para crear la app, el .pkg y el .dmg
 docs/      Capturas para este README
 .github/   Compilación automática en GitHub Actions
 ```
