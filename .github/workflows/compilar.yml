@@ -1,0 +1,67 @@
+# Compila RelojBackground para Windows (.exe) y macOS (.dmg) en las máquinas de GitHub.
+# - Cada cambio en main: los instaladores quedan para descargar en la pestaña "Actions".
+# - Al subir una etiqueta de versión (por ejemplo v2.1): se crea una Release con los dos instaladores.
+name: Compilar
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compilar RelojBackground.exe
+        working-directory: windows
+        shell: cmd
+        run: call compilar.bat < NUL
+
+      - name: Empaquetar
+        shell: pwsh
+        run: Compress-Archive -Path windows/RelojBackground.exe, windows/LEEME.md -DestinationPath RelojBackground-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RelojBackground-Windows
+          path: RelojBackground-Windows.zip
+
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compilar la app y crear el instalador
+        working-directory: mac
+        run: |
+          chmod +x compilar.sh crear-dmg.sh
+          ./crear-dmg.sh --universal
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RelojBackground-Mac
+          path: mac/RelojBackground.dmg
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: instaladores
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            instaladores/RelojBackground-Windows.zip
+            instaladores/RelojBackground.dmg
+          generate_release_notes: true

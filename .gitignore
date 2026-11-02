@@ -1,0 +1,14 @@
+# Archivos generados al compilar (se publican en Releases, no en el código)
+*.exe
+*.dmg
+*.zip
+mac/*.app
+mac/RelojBackground-*
+
+# Configuración personal del usuario
+config.ini
+
+# Archivos del sistema
+Thumbs.db
+desktop.ini
+.DS_Store

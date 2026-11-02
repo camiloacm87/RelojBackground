@@ -1,0 +1,10 @@
+# Saltos de línea correctos para cada sistema, aunque se edite en Windows o en Mac.
+*.sh     text eol=lf
+*.swift  text eol=lf
+*.plist  text eol=lf
+*.yml    text eol=lf
+*.bat    text eol=crlf
+*.cs     text eol=crlf
+*.md     text
+*.png    binary
+*.ico    binary
