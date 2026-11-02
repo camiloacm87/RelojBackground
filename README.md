@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/camiloacm87/RelojBackground/releases/latest"><b>⬇ Descargar la última versión</b></a>
+  <a href="https://github.com/camiloacm87/RelojBackground/raw/main/instaladores/RelojBackground-Setup.exe"><b>⬇ Windows (Setup.exe)</b></a> &nbsp;·&nbsp; <a href="https://github.com/camiloacm87/RelojBackground/raw/main/instaladores/RelojBackground.pkg"><b>⬇ macOS (.pkg)</b></a>
 </p>
 
 ![Los 6 diseños del reloj](docs/disenos.png)
@@ -41,21 +41,21 @@
 ## Instalación
 
 ### Windows (10 y 11)
-1. Descarga **`RelojBackground-Setup.exe`** desde [Releases](https://github.com/camiloacm87/RelojBackground/releases/latest).
+1. Descarga **[RelojBackground-Setup.exe](https://github.com/camiloacm87/RelojBackground/raw/main/instaladores/RelojBackground-Setup.exe)** (también en la carpeta [instaladores](instaladores)).
 2. Ábrelo y pulsa **Instalar**. Puedes elegir crear un acceso en el escritorio, iniciar con Windows y abrir la app al terminar.
 3. Se instala solo para tu usuario (sin permisos de administrador), con acceso en el menú Inicio.
    Para quitarla: **Configuración → Aplicaciones → Aplicaciones instaladas → RelojBackground → Desinstalar**.
 
 Windows puede mostrar un aviso de SmartScreen porque el instalador no está firmado: **Más información → Ejecutar de todas formas**.
 
-¿Sin instalar? Descarga `RelojBackground-Windows-portable.zip`, descomprímelo y abre `RelojBackground.exe`.
+¿Sin instalar? Descarga [RelojBackground-Windows-portable.zip](https://github.com/camiloacm87/RelojBackground/raw/main/instaladores/RelojBackground-Windows-portable.zip), descomprímelo y abre `RelojBackground.exe`.
 
 ### macOS (11 Big Sur o superior, Apple Silicon e Intel)
-1. Descarga **`RelojBackground.pkg`** desde [Releases](https://github.com/camiloacm87/RelojBackground/releases/latest).
+1. Descarga **[RelojBackground.pkg](https://github.com/camiloacm87/RelojBackground/raw/main/instaladores/RelojBackground.pkg)** (también en la carpeta [instaladores](instaladores)).
 2. La primera vez: clic derecho sobre el archivo → **Abrir** (no está firmado por Apple) y sigue el asistente.
 3. La app queda en **Aplicaciones** y en Launchpad.
 
-También está `RelojBackground.dmg`: ábrelo y arrastra **RelojBackground** a **Aplicaciones**.
+También está [RelojBackground.dmg](https://github.com/camiloacm87/RelojBackground/raw/main/instaladores/RelojBackground.dmg): ábrelo y arrastra **RelojBackground** a **Aplicaciones**.
 
 ## Uso
 

@@ -6,6 +6,9 @@
 mac/*.app
 mac/RelojBackground-*
 
+# ...salvo los instaladores publicados en la carpeta instaladores/
+!instaladores/*
+
 # Configuración personal del usuario
 config.ini
 
