@@ -703,7 +703,13 @@ static class ICal
         {
             System.Net.HttpWebResponse r = ex.Response as System.Net.HttpWebResponse;
             if (r != null && ((int)r.StatusCode == 404 || (int)r.StatusCode == 403 || (int)r.StatusCode == 401))
+            {
+                // Google: la dirección pública solo existe si el calendario está compartido públicamente.
+                if (url.IndexOf("calendar.google.com", StringComparison.OrdinalIgnoreCase) >= 0 && url.IndexOf("/public/", StringComparison.OrdinalIgnoreCase) >= 0)
+                    throw new Exception("ese es el enlace público y el calendario no está compartido públicamente. " +
+                                        "Usa la «Dirección secreta en formato iCal» (contiene private-) o activa «Hacer que esté disponible públicamente».");
                 throw new Exception("el servicio no encontró el calendario. Revisa que el enlace esté completo y siga activo.");
+            }
             throw new Exception("no se pudo conectar (" + ex.Message.TrimEnd('.') + ").");
         }
         if (texto.IndexOf("BEGIN:VCALENDAR", StringComparison.OrdinalIgnoreCase) < 0)
