@@ -635,9 +635,15 @@ static class MenuInicio
 // por eso solo se guarda en config.ini (que no se sube a GitHub).
 class ConexionCalendario
 {
-    public static readonly string[] SERVICIOS = { "Google", "Outlook", "iCloud", "Otro" };
+    // "Google (exportar)": exportación de Google Calendar descargada con el navegador (ver ICal.DescargarConNavegador).
+    // "Imagen": eventos reconocidos en una captura o imagen del calendario (ver LectorImagen); no se descarga nada.
+    public static readonly string[] SERVICIOS = { "Google", "Google (exportar)", "Outlook", "iCloud", "Imagen", "Otro" };
+    public const int GOOGLE = 0, EXPORTAR = 1, OUTLOOK = 2, ICLOUD = 3, IMAGEN = 4, OTRO = 5;
+    public const string URL_IMAGEN = "imagen:";
 
     public string Servicio = "Google", Nombre = "Google", Url = "";
+
+    public bool EsImagen { get { return Url.StartsWith(URL_IMAGEN); } }
 
     public ConexionCalendario Copia() { return (ConexionCalendario)MemberwiseClone(); }
 
@@ -673,6 +679,113 @@ static class ICal
     {
         // Google, Outlook e iCloud solo aceptan TLS 1.2 o superior.
         try { System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; } catch { }
+    }
+
+    // ----- "Foto" del calendario: exportación de Google Calendar descargada con el navegador -----
+    // Es la misma exportación de Configuración → Importar y exportar → Exportar: un .zip con un .ics por calendario.
+    // Se usa la sesión que ya está abierta en el navegador, así que no hace falta ningún enlace ni hacer nada público.
+
+    public const string EXPORTAR_GOOGLE = "https://calendar.google.com/calendar/exporticalzip";
+
+    public static bool EsExportacion(string url) { return url.StartsWith(EXPORTAR_GOOGLE, StringComparison.OrdinalIgnoreCase); }
+
+    // cuenta: correo de la cuenta de Google del navegador (vacío = la cuenta principal)
+    public static string UrlExportacion(string cuenta)
+    {
+        cuenta = (cuenta ?? "").Trim();
+        return EXPORTAR_GOOGLE + (cuenta == "" ? "" : "?authuser=" + Uri.EscapeDataString(cuenta));
+    }
+
+    // Abre la exportación en el navegador, espera a que aparezca el archivo en Descargas (hasta 3 minutos),
+    // lo lee y lo borra.
+    public static List<EventoCalendario> DescargarConNavegador(string url, string fuente, DateTime desde, DateTime hasta)
+    {
+        string carpeta = CarpetaDescargas();
+        DateTime inicio = DateTime.Now.AddSeconds(-2);
+        System.Diagnostics.Process.Start(url);
+        DateTime limite = DateTime.Now.AddMinutes(3);
+        while (DateTime.Now < limite)
+        {
+            Thread.Sleep(1000);
+            FileInfo f = ArchivoNuevo(carpeta, inicio);
+            if (f == null) continue;
+            // Espera a que el navegador termine de escribirlo (tamaño estable).
+            long tam = -1;
+            for (int i = 0; i < 20; i++)
+            {
+                f.Refresh();
+                if (f.Length > 0 && f.Length == tam) break;
+                tam = f.Length;
+                Thread.Sleep(500);
+            }
+            List<EventoCalendario> eventos = LeerArchivo(f.FullName, fuente, desde, hasta);
+            try { f.Delete(); } catch { } // no deja copias del calendario en Descargas
+            return eventos;
+        }
+        throw new Exception("no llegó la descarga. Comprueba que en el navegador tienes iniciada la sesión de Google " +
+                            "y que las descargas se guardan en la carpeta Descargas.");
+    }
+
+    // Lee un .ics o un .zip con varios .ics.
+    public static List<EventoCalendario> LeerArchivo(string ruta, string fuente, DateTime desde, DateTime hasta)
+    {
+        List<EventoCalendario> res = new List<EventoCalendario>();
+        if (ruta.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            int calendarios = 0;
+            using (System.IO.Compression.ZipArchive z = System.IO.Compression.ZipFile.OpenRead(ruta))
+                foreach (System.IO.Compression.ZipArchiveEntry e in z.Entries)
+                {
+                    if (!e.Name.EndsWith(".ics", StringComparison.OrdinalIgnoreCase)) continue;
+                    calendarios++;
+                    using (StreamReader sr = new StreamReader(e.Open(), System.Text.Encoding.UTF8))
+                        res.AddRange(Leer(sr.ReadToEnd(), fuente, desde, hasta));
+                }
+            if (calendarios == 0) throw new Exception("el archivo descargado no contiene calendarios.");
+        }
+        else res.AddRange(Leer(File.ReadAllText(ruta, System.Text.Encoding.UTF8), fuente, desde, hasta));
+        res.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
+        return res;
+    }
+
+    // El .zip o .ics más reciente que apareció en la carpeta después de "desde" (ignora descargas a medias).
+    static FileInfo ArchivoNuevo(string carpeta, DateTime desde)
+    {
+        FileInfo mejor = null;
+        try
+        {
+            foreach (FileInfo f in new DirectoryInfo(carpeta).GetFiles())
+            {
+                string ext = f.Extension.ToLowerInvariant();
+                if (ext != ".zip" && ext != ".ics") continue;
+                DateTime t = f.CreationTime > f.LastWriteTime ? f.CreationTime : f.LastWriteTime;
+                if (t < desde) continue;
+                if (mejor == null || t > mejor.LastWriteTime) mejor = f;
+            }
+        }
+        catch { }
+        return mejor;
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    static extern int SHGetKnownFolderPath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStruct)] Guid id,
+                                           uint flags, IntPtr token, out IntPtr ruta);
+
+    // Carpeta Descargas del usuario (puede estar movida a otra unidad).
+    static string CarpetaDescargas()
+    {
+        try
+        {
+            IntPtr p;
+            if (SHGetKnownFolderPath(new Guid("374DE290-123F-4565-9164-39C4925E467B"), 0, IntPtr.Zero, out p) == 0)
+            {
+                string r = System.Runtime.InteropServices.Marshal.PtrToStringUni(p);
+                System.Runtime.InteropServices.Marshal.FreeCoTaskMem(p);
+                return r;
+            }
+        }
+        catch { }
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     }
 
     // webcal:// (iCloud y otros) es lo mismo que https://
@@ -1716,6 +1829,20 @@ class Overlay : Form
         catch { }
     }
 
+    // Añade eventos reconocidos en una imagen (los repetidos se reemplazan; los ya pasados se descartan).
+    public void AgregarEventosDeImagen(List<EventoCalendario> nuevos)
+    {
+        DateTime ayer = DateTime.Now.AddDays(-1);
+        List<string> uids = new List<string>();
+        foreach (EventoCalendario e in nuevos) uids.Add(e.Uid);
+        List<EventoCalendario> l = Eventos.FindAll(delegate(EventoCalendario e) { return !uids.Contains(e.Uid) && e.Fin > ayer; });
+        l.AddRange(nuevos);
+        l.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
+        Eventos = l;
+        GuardarEventos();
+        if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
+    }
+
     // Quita los eventos de calendarios que ya no están en la configuración (al eliminar una sincronización),
     // sin volver a descargar los demás.
     public void PodarEventos()
@@ -1735,13 +1862,17 @@ class Overlay : Form
     public void SincronizarCalendarios()
     {
         if (sincronizando || !IsHandleCreated) return;
+        // Se descargan los calendarios con enlace; los eventos sacados de imágenes se conservan tal cual.
         List<ConexionCalendario> conexiones = new List<ConexionCalendario>();
-        foreach (ConexionCalendario c in op.Calendarios) conexiones.Add(c.Copia());
+        List<string> imagenes = new List<string>();
+        foreach (ConexionCalendario c in op.Calendarios)
+            if (c.EsImagen) imagenes.Add(c.Nombre);
+            else conexiones.Add(c.Copia());
         if (conexiones.Count == 0)
         {
-            Eventos = new List<EventoCalendario>();
+            Eventos = Eventos.FindAll(delegate(EventoCalendario e) { return imagenes.Contains(e.Fuente); });
             ErrorCalendario = null;
-            UltimaSincronizacion = null;
+            if (op.Calendarios.Count == 0) UltimaSincronizacion = null;
             GuardarEventos();
             if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
             return;
@@ -1755,7 +1886,11 @@ class Overlay : Form
             DateTime desde = DateTime.Today, hasta = DateTime.Today.AddDays(8);
             foreach (ConexionCalendario c in conexiones)
             {
-                try { todos.AddRange(ICal.Descargar(c.Url, c.Nombre, desde, hasta)); }
+                try
+                {
+                    todos.AddRange(ICal.EsExportacion(c.Url) ? ICal.DescargarConNavegador(c.Url, c.Nombre, desde, hasta)
+                                                             : ICal.Descargar(c.Url, c.Nombre, desde, hasta));
+                }
                 catch (Exception ex) { errores.Add(c.Nombre + ": " + ex.Message); }
             }
             todos.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
@@ -1763,6 +1898,8 @@ class Overlay : Form
             {
                 BeginInvoke(new MethodInvoker(delegate
                 {
+                    todos.AddRange(Eventos.FindAll(delegate(EventoCalendario e) { return imagenes.Contains(e.Fuente); }));
+                    todos.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
                     Eventos = todos;
                     ErrorCalendario = errores.Count > 0 ? string.Join("\n", errores.ToArray()) : null;
                     UltimaSincronizacion = DateTime.Now;

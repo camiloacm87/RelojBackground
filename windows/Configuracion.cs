@@ -988,34 +988,44 @@ class CajaHora : ControlModerno
     }
 }
 
-// Ventana para conectar un calendario: servicio, instrucciones para obtener el enlace iCal privado,
-// nombre y enlace. Al pulsar "Conectar" lo descarga para comprobar que funciona.
+// Ventana para conectar un calendario. Según el servicio:
+// - Google / Outlook / iCloud / Otro: se pega el enlace iCal privado y se comprueba descargándolo.
+// - Exportar: la app abre la exportación de Google Calendar en el navegador y lee el archivo descargado.
+// - Imagen: se recorta la pantalla o se sube una imagen del calendario; los eventos se reconocen con el OCR de Windows.
 class VentanaConectar : Form
 {
+    static readonly string[] ETIQUETAS = { "Google", "Exportar", "Outlook", "iCloud", "Imagen", "Otro" };
     static readonly string[] PASOS = {
         "En Google Calendar (en la web): ⚙ Configuración → en «Configuración de mis calendarios» elige el calendario → " +
         "«Integrar el calendario» → copia la «Dirección secreta en formato iCal» (termina en basic.ics).",
+        "Para cuentas que no tienen dirección secreta (por ejemplo, del trabajo). Al sincronizar, la app abre Google Calendar " +
+        "en tu navegador, que descarga una copia de tus calendarios (la misma de Configuración → Importar y exportar → Exportar); " +
+        "la app la lee y la borra. Debes tener la sesión de Google iniciada en el navegador.",
         "En Outlook (en la web): ⚙ Configuración → Calendario → Calendarios compartidos → «Publicar un calendario»: " +
         "elige el calendario y «Puede ver todos los detalles» → Publicar → copia el vínculo ICS.",
         "En el iPhone o la Mac, app Calendario: toca ⓘ junto al calendario → activa «Calendario público» → " +
         "copia el enlace (empieza por webcal://).",
+        "Abre tu calendario en la pantalla (vista Semana, Día o Programación) y recórtalo, o sube una captura guardada. " +
+        "La app lee las fechas, horas y títulos, y te deja revisarlos antes de agregarlos. No se conecta a internet.",
         "Pega el enlace en formato iCal (.ics) de tu calendario. También sirve uno que empiece por webcal://."
     };
     static readonly string[] PAGINAS = {
-        "https://calendar.google.com/calendar/r/settings",
-        "https://outlook.live.com/calendar/0/options/calendar/SharedCalendars",
-        "", ""
+        "https://calendar.google.com/calendar/r/settings", "", "https://outlook.live.com/calendar/0/options/calendar/SharedCalendars", "", "", ""
     };
 
-    readonly Segmentado servicio = new Segmentado(ConexionCalendario.SERVICIOS);
-    readonly Label pasos = new Label(), estado = new Label();
+    readonly Segmentado servicio = new Segmentado(ETIQUETAS);
+    readonly Label pasos = new Label(), estado = new Label(), lEnlace = new Label();
     readonly MarcoTexto nombre = new MarcoTexto(), enlace = new MarcoTexto();
     readonly BotonModerno abrir = new BotonModerno("Abrir la página", false), conectar = new BotonModerno("Conectar", true),
-                          cancelar = new BotonModerno("Cancelar", false);
+                          cancelar = new BotonModerno("Cancelar", false),
+                          recortar = new BotonModerno("Recortar la pantalla", true), subir = new BotonModerno("Subir una imagen", false);
     readonly List<string> nombresUsados;
     public ConexionCalendario Resultado;
+    public List<EventoCalendario> EventosImagen; // con el servicio Imagen: los eventos elegidos en la revisión
     public int EventosEncontrados;
     bool nombreEditado;
+
+    int Indice { get { return servicio.Indice; } }
 
     public VentanaConectar(List<string> usados)
     {
@@ -1031,42 +1041,51 @@ class VentanaConectar : Form
         Font = Tema.Normal;
         AutoScaleDimensions = new SizeF(96f, 96f);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(560, 430);
+        ClientSize = new Size(600, 440);
 
         Etiqueta(new Label(), "Servicio", 24, 20, 200, 22, Tema.Titulo, Tema.Texto);
         servicio.Fondo = Tema.Fondo;
-        servicio.SetBounds(24, 46, 512, 34);
+        servicio.SetBounds(24, 46, 552, 34);
         servicio.Indice = 0;
         servicio.Cambio += delegate { ElegirServicio(); };
         Controls.Add(servicio);
 
-        Etiqueta(pasos, "", 24, 92, 512, 60, Tema.Normal, Tema.Texto2);
+        Etiqueta(pasos, "", 24, 92, 552, 64, Tema.Normal, Tema.Texto2);
         abrir.Fondo = Tema.Fondo;
-        abrir.SetBounds(24, 156, 150, 30);
+        abrir.SetBounds(24, 160, 150, 30);
         abrir.Click += delegate
         {
-            string url = PAGINAS[servicio.Indice];
+            string url = PAGINAS[Indice];
             if (url != "") try { System.Diagnostics.Process.Start(url); } catch { }
         };
         Controls.Add(abrir);
 
-        Etiqueta(new Label(), "Nombre", 24, 204, 200, 22, Tema.Titulo, Tema.Texto);
+        Etiqueta(new Label(), "Nombre", 24, 206, 200, 22, Tema.Titulo, Tema.Texto);
         nombre.Fondo = Tema.Fondo;
-        nombre.SetBounds(24, 230, 512, 32);
+        nombre.SetBounds(24, 232, 552, 32);
         nombre.Caja.TextChanged += delegate { if (nombre.Caja.Focused) nombreEditado = true; };
         Controls.Add(nombre);
 
-        Etiqueta(new Label(), "Enlace iCal (privado)", 24, 276, 300, 22, Tema.Titulo, Tema.Texto);
+        Etiqueta(lEnlace, "Enlace iCal (privado)", 24, 278, 400, 22, Tema.Titulo, Tema.Texto);
         enlace.Fondo = Tema.Fondo;
-        enlace.SetBounds(24, 302, 512, 32);
+        enlace.SetBounds(24, 304, 552, 32);
         enlace.Caja.TextChanged += delegate { estado.Text = ""; };
         Controls.Add(enlace);
 
-        Etiqueta(estado, "El enlace funciona como una contraseña: solo se guarda en esta PC.", 24, 340, 512, 36, Tema.Pequena, Tema.Texto2);
+        // Servicio Imagen: en lugar del enlace, los dos botones
+        recortar.Fondo = subir.Fondo = Tema.Fondo;
+        recortar.SetBounds(24, 290, 200, 36);
+        subir.SetBounds(234, 290, 180, 36);
+        recortar.Click += delegate { DesdeImagen(true); };
+        subir.Click += delegate { DesdeImagen(false); };
+        Controls.Add(recortar);
+        Controls.Add(subir);
+
+        Etiqueta(estado, "", 24, 344, 552, 40, Tema.Pequena, Tema.Texto2);
 
         conectar.Fondo = cancelar.Fondo = Tema.Fondo;
-        conectar.SetBounds(426, 382, 110, 34);
-        cancelar.SetBounds(306, 382, 110, 34);
+        conectar.SetBounds(466, 392, 110, 34);
+        cancelar.SetBounds(346, 392, 110, 34);
         conectar.Click += delegate { Conectar(); };
         cancelar.Click += delegate { DialogResult = DialogResult.Cancel; };
         Controls.Add(conectar);
@@ -1102,12 +1121,23 @@ class VentanaConectar : Form
 
     void ElegirServicio()
     {
-        int i = servicio.Indice;
+        int i = Indice;
+        bool imagen = i == ConexionCalendario.IMAGEN, exportar = i == ConexionCalendario.EXPORTAR;
         pasos.Text = PASOS[i];
         abrir.Visible = PAGINAS[i] != "";
-        abrir.Text = i == 0 ? "Abrir Google Calendar" : "Abrir Outlook";
+        abrir.Text = i == ConexionCalendario.GOOGLE ? "Abrir Google Calendar" : "Abrir Outlook";
         abrir.Width = TextRenderer.MeasureText(abrir.Text, Tema.Normal).Width + 32;
-        if (!nombreEditado) nombre.Text = NombreLibre(ConexionCalendario.SERVICIOS[i] == "Otro" ? "Calendario" : ConexionCalendario.SERVICIOS[i]);
+        lEnlace.Visible = enlace.Visible = !imagen;
+        recortar.Visible = subir.Visible = imagen;
+        conectar.Visible = !imagen;
+        AcceptButton = imagen ? (IButtonControl)recortar : conectar;
+        lEnlace.Text = exportar ? "Cuenta de Google en el navegador (opcional, por ejemplo tu correo del trabajo)" : "Enlace iCal (privado)";
+        estado.ForeColor = Tema.Texto2;
+        estado.Text = imagen ? "Consejo: recorta solo la zona del calendario y que se vean el día, la hora y el título de cada evento." :
+                      exportar ? "Se abrirá el navegador una vez para comprobarlo." :
+                      "El enlace funciona como una contraseña: solo se guarda en esta PC.";
+        string base_ = i == ConexionCalendario.IMAGEN ? "Desde imagen" : i == ConexionCalendario.OTRO ? "Calendario" : ConexionCalendario.SERVICIOS[i];
+        if (!nombreEditado) nombre.Text = imagen ? base_ : NombreLibre(base_);
     }
 
     // "Google", "Google 2", "Google 3"…
@@ -1120,20 +1150,26 @@ class VentanaConectar : Form
 
     void Conectar()
     {
-        string url = enlace.Text.Trim(), nom = nombre.Text.Trim();
-        if (url == "") { Error("Pega el enlace iCal del calendario."); return; }
-        if (nom == "") nom = NombreLibre(ConexionCalendario.SERVICIOS[servicio.Indice]);
+        bool exportar = Indice == ConexionCalendario.EXPORTAR;
+        string texto = enlace.Text.Trim(), nom = nombre.Text.Trim();
+        if (!exportar && texto == "") { Error("Pega el enlace iCal del calendario."); return; }
+        if (nom == "") nom = NombreLibre(ConexionCalendario.SERVICIOS[Indice]);
         if (nombresUsados.Contains(nom)) { Error("Ya hay un calendario llamado «" + nom + "». Elige otro nombre."); return; }
+        string url = exportar ? ICal.UrlExportacion(texto) : ICal.Normalizar(texto);
 
         conectar.Enabled = cancelar.Enabled = false;
         estado.ForeColor = Tema.Texto2;
-        estado.Text = "Conectando…";
+        estado.Text = exportar ? "Se abrió tu navegador: esperando la descarga del calendario…" : "Conectando…";
         Cursor = Cursors.WaitCursor;
         System.Threading.ThreadPool.QueueUserWorkItem(delegate
         {
             string error = null;
             int n = 0;
-            try { n = ICal.Descargar(url, nom, DateTime.Today, DateTime.Today.AddDays(8)).Count; }
+            try
+            {
+                n = (exportar ? ICal.DescargarConNavegador(url, nom, DateTime.Today, DateTime.Today.AddDays(8))
+                              : ICal.Descargar(url, nom, DateTime.Today, DateTime.Today.AddDays(8))).Count;
+            }
             catch (Exception ex) { error = ex.Message; }
             try
             {
@@ -1143,9 +1179,9 @@ class VentanaConectar : Form
                     conectar.Enabled = cancelar.Enabled = true;
                     if (error != null) { Error("No se pudo conectar: " + error); return; }
                     Resultado = new ConexionCalendario();
-                    Resultado.Servicio = ConexionCalendario.SERVICIOS[servicio.Indice];
+                    Resultado.Servicio = ConexionCalendario.SERVICIOS[Indice];
                     Resultado.Nombre = nom;
-                    Resultado.Url = ICal.Normalizar(url);
+                    Resultado.Url = url;
                     EventosEncontrados = n;
                     DialogResult = DialogResult.OK;
                 }));
@@ -1154,10 +1190,317 @@ class VentanaConectar : Form
         });
     }
 
+    // Servicio Imagen: recorta o sube la imagen, la lee y deja revisar los eventos.
+    void DesdeImagen(bool recortarPantalla)
+    {
+        string nom = nombre.Text.Trim();
+        if (nom == "") nom = "Desde imagen";
+        List<EventoCalendario> eventos = Reconocimiento.Pedir(this, recortarPantalla, nom);
+        if (eventos == null) return;
+        Resultado = new ConexionCalendario();
+        Resultado.Servicio = ConexionCalendario.SERVICIOS[ConexionCalendario.IMAGEN];
+        Resultado.Nombre = nom;
+        Resultado.Url = ConexionCalendario.URL_IMAGEN;
+        EventosImagen = eventos;
+        EventosEncontrados = eventos.Count;
+        DialogResult = DialogResult.OK;
+    }
+
     void Error(string texto)
     {
         estado.ForeColor = Tema.Error;
         estado.Text = texto;
+    }
+}
+
+// Reconocer eventos en una imagen: pedirla (recorte o archivo), leerla con el OCR y revisar el resultado.
+static class Reconocimiento
+{
+    // Devuelve los eventos elegidos en la revisión, o null si se canceló.
+    public static List<EventoCalendario> Pedir(Form duenio, bool recortar, string fuente)
+    {
+        Bitmap imagen = recortar ? RecortePantalla.Capturar(duenio) : Abrir(duenio);
+        if (imagen == null) return null;
+        List<EventoCalendario> eventos;
+        Cursor antes = duenio.Cursor;
+        duenio.Cursor = Cursors.WaitCursor;
+        try
+        {
+            using (imagen) eventos = LectorImagen.Reconocer(LectorImagen.LeerTexto(imagen), DateTime.Now, fuente);
+        }
+        catch (Exception ex)
+        {
+            duenio.Cursor = antes;
+            MessageBox.Show(duenio, "No se pudo leer la imagen: " + ex.Message, Program.NOMBRE, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
+        }
+        duenio.Cursor = antes;
+        using (VentanaRevision v = new VentanaRevision(eventos))
+            return v.ShowDialog(duenio) == DialogResult.OK ? v.Elegidos : null;
+    }
+
+    static Bitmap Abrir(Form duenio)
+    {
+        using (OpenFileDialog d = new OpenFileDialog())
+        {
+            d.Title = "Elige una imagen de tu calendario";
+            d.Filter = "Imágenes|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|Todos los archivos|*.*";
+            if (d.ShowDialog(duenio) != DialogResult.OK) return null;
+            try
+            {
+                using (Image i = Image.FromFile(d.FileName)) return new Bitmap(i);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(duenio, "No se pudo abrir la imagen: " + ex.Message, Program.NOMBRE, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return null;
+            }
+        }
+    }
+}
+
+// Pantalla para recortar: se oscurece todo y se arrastra para elegir la zona del calendario (Esc cancela).
+class RecortePantalla : Form
+{
+    readonly Bitmap captura;
+    Point inicio;
+    Rectangle seleccion;
+    bool arrastrando;
+    Bitmap resultado;
+
+    public static Bitmap Capturar(Form duenio)
+    {
+        // Se ocultan un momento las ventanas de la app para que no salgan en la captura.
+        List<Form> ocultas = new List<Form>();
+        for (Form f = duenio; f != null; f = f.Owner) ocultas.Add(f);
+        foreach (Form f in Application.OpenForms) if (f.Visible && f.TopLevel && !ocultas.Contains(f) && f is Configuracion) ocultas.Add(f);
+        Dictionary<Form, double> opacidad = new Dictionary<Form, double>();
+        foreach (Form f in ocultas) { opacidad[f] = f.Opacity; f.Opacity = 0; }
+        Application.DoEvents();
+        System.Threading.Thread.Sleep(250);
+
+        Rectangle v = SystemInformation.VirtualScreen;
+        Bitmap captura = new Bitmap(v.Width, v.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(captura)) g.CopyFromScreen(v.Location, Point.Empty, v.Size);
+
+        Bitmap res = null;
+        try
+        {
+            using (RecortePantalla r = new RecortePantalla(captura, v))
+                if (r.ShowDialog() == DialogResult.OK) res = r.resultado;
+        }
+        finally
+        {
+            captura.Dispose();
+            foreach (Form f in ocultas) f.Opacity = opacidad[f];
+        }
+        return res;
+    }
+
+    RecortePantalla(Bitmap c, Rectangle zona)
+    {
+        captura = c;
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        Bounds = zona;
+        TopMost = true;
+        ShowInTaskbar = false;
+        Cursor = Cursors.Cross;
+        KeyPreview = true;
+        DoubleBuffered = true;
+    }
+
+    protected override void OnShown(EventArgs e) { base.OnShown(e); Activate(); }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape) DialogResult = DialogResult.Cancel;
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Right) { DialogResult = DialogResult.Cancel; return; }
+        arrastrando = true;
+        inicio = e.Location;
+        seleccion = new Rectangle(e.Location, Size.Empty);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (!arrastrando) return;
+        seleccion = Rectangle.FromLTRB(Math.Min(inicio.X, e.X), Math.Min(inicio.Y, e.Y), Math.Max(inicio.X, e.X), Math.Max(inicio.Y, e.Y));
+        Invalidate();
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        if (!arrastrando) return;
+        arrastrando = false;
+        if (seleccion.Width < 30 || seleccion.Height < 30) { seleccion = Rectangle.Empty; Invalidate(); return; }
+        resultado = captura.Clone(seleccion, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        DialogResult = DialogResult.OK;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.DrawImageUnscaled(captura, 0, 0);
+        using (SolidBrush velo = new SolidBrush(Color.FromArgb(130, 0, 0, 0)))
+        using (Region fuera = new Region(ClientRectangle))
+        {
+            if (!seleccion.IsEmpty) fuera.Exclude(seleccion);
+            g.FillRegion(velo, fuera);
+        }
+        if (!seleccion.IsEmpty)
+            using (Pen p = new Pen(Tema.Acento, 2)) g.DrawRectangle(p, seleccion);
+
+        // Instrucciones arriba, en el centro de la pantalla principal
+        Rectangle principal = Screen.PrimaryScreen.Bounds;
+        principal.Offset(-Bounds.X, -Bounds.Y);
+        string texto = "Arrastra para recortar tu calendario  ·  Esc para cancelar";
+        Size t = TextRenderer.MeasureText(texto, Tema.Titulo);
+        RectangleF caja = new RectangleF(principal.X + (principal.Width - t.Width - 40) / 2f, principal.Y + 24, t.Width + 40, 40);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        Tema.Rellenar(g, caja, 20, Color.FromArgb(235, 32, 32, 32), Color.Empty, 1);
+        TextRenderer.DrawText(g, texto, Tema.Titulo, Rectangle.Round(caja), Color.White,
+                              TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+}
+
+// Revisión de los eventos reconocidos en una imagen: se pueden quitar y corregir el título antes de agregarlos.
+class VentanaRevision : Form
+{
+    readonly List<EventoCalendario> eventos;
+    readonly List<Interruptor> incluir = new List<Interruptor>();
+    readonly List<MarcoTexto> titulos = new List<MarcoTexto>();
+    readonly BotonModerno agregar = new BotonModerno("Agregar", true);
+    public List<EventoCalendario> Elegidos = new List<EventoCalendario>();
+    static readonly System.Globalization.CultureInfo ES = new System.Globalization.CultureInfo("es-ES");
+
+    public VentanaRevision(List<EventoCalendario> lista)
+    {
+        eventos = lista;
+        Text = "Eventos reconocidos";
+        Icon = Iconos.Grande;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = MinimizeBox = false;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Tema.Fondo;
+        ForeColor = Tema.Texto;
+        Font = Tema.Normal;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(640, 480);
+
+        Label titulo = new Label(), ayuda = new Label();
+        Etiqueta(titulo, eventos.Count == 0 ? "No se reconoció ningún evento" : "Se reconocieron " + eventos.Count + (eventos.Count == 1 ? " evento" : " eventos"),
+                 24, 18, 592, 24, Tema.Titulo, Tema.Texto);
+        Etiqueta(ayuda, eventos.Count == 0
+            ? "Prueba a recortar solo la zona del calendario, con la vista Semana, Día o Programación, y que se vean el día, la hora y el título de cada evento."
+            : "Revisa lo que se leyó: desactiva los que no quieras y corrige el título si hace falta. El aviso sonará antes de cada evento con hora.",
+            24, 44, 592, 40, Tema.Normal, Tema.Texto2);
+
+        Panel lista_ = new Panel();
+        lista_.SetBounds(24, 92, 592, 324);
+        lista_.AutoScroll = true;
+        lista_.BackColor = Tema.Fondo;
+        lista_.HandleCreated += delegate { Dwm.TemaBarras(lista_.Handle); };
+        Controls.Add(lista_);
+
+        if (eventos.Count > 0)
+        {
+            const int alto = 52, ancho = 574;
+            Tarjeta t = new Tarjeta();
+            t.SetBounds(0, 0, ancho, eventos.Count * alto + 2);
+            lista_.Controls.Add(t);
+            for (int i = 0; i < eventos.Count; i++)
+            {
+                EventoCalendario e = eventos[i];
+                int y = i * alto;
+                Interruptor inc = new Interruptor();
+                inc.Marcado = true;
+                inc.Fondo = Tema.Superficie;
+                inc.Location = new Point(14, y + (alto - inc.Height) / 2);
+                inc.Cambio += delegate { Contar(); };
+                t.Controls.Add(inc);
+                incluir.Add(inc);
+
+                CajaHora hora = new CajaHora(e.TodoElDia ? "Todo el día" : e.Inicio.ToString("HH:mm"));
+                hora.Size = new Size(104, 36);
+                hora.Fondo = Tema.Superficie;
+                hora.Location = new Point(inc.Right + 10, y + (alto - hora.Height) / 2);
+                t.Controls.Add(hora);
+
+                Label dia = new Label();
+                string nombreDia = e.Inicio.ToString("dddd", ES); // "domingo" → "Dom" (el formato ddd da "do.")
+                dia.Text = char.ToUpper(nombreDia[0]) + nombreDia.Substring(1, 2) + " " + e.Inicio.ToString("d MMM", ES).Replace(".", "");
+                dia.Font = Tema.Normal;
+                dia.ForeColor = Tema.Texto2;
+                dia.BackColor = Tema.Superficie;
+                dia.TextAlign = ContentAlignment.MiddleLeft;
+                dia.SetBounds(hora.Right + 10, y + 1, 90, alto - 2);
+                t.Controls.Add(dia);
+
+                MarcoTexto tt = new MarcoTexto();
+                tt.Fondo = Tema.Superficie;
+                tt.Text = e.Titulo;
+                tt.SetBounds(dia.Right + 6, y + (alto - 32) / 2, ancho - dia.Right - 6 - 14, 32);
+                t.Controls.Add(tt);
+                titulos.Add(tt);
+                if (i < eventos.Count - 1) t.Separadores.Add(y + alto);
+            }
+        }
+
+        BotonModerno cancelar = new BotonModerno("Cancelar", false);
+        agregar.Fondo = cancelar.Fondo = Tema.Fondo;
+        agregar.SetBounds(476, 432, 140, 34);
+        cancelar.SetBounds(356, 432, 110, 34);
+        agregar.Click += delegate { Aceptar(); };
+        cancelar.Click += delegate { DialogResult = DialogResult.Cancel; };
+        Controls.Add(agregar);
+        Controls.Add(cancelar);
+        AcceptButton = agregar;
+        CancelButton = cancelar;
+        Contar();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Tema.AplicarVentana(this);
+    }
+
+    void Etiqueta(Label l, string texto, int x, int y, int w, int h, Font f, Color c)
+    {
+        l.Text = texto;
+        l.Font = f;
+        l.ForeColor = c;
+        l.BackColor = Tema.Fondo;
+        l.SetBounds(x, y, w, h);
+        Controls.Add(l);
+    }
+
+    void Contar()
+    {
+        int n = incluir.FindAll(delegate(Interruptor i) { return i.Marcado; }).Count;
+        agregar.Text = n == 0 ? "Agregar" : "Agregar " + n + (n == 1 ? " evento" : " eventos");
+        agregar.Enabled = n > 0;
+    }
+
+    void Aceptar()
+    {
+        Elegidos.Clear();
+        for (int i = 0; i < eventos.Count; i++)
+        {
+            if (!incluir[i].Marcado) continue;
+            EventoCalendario e = eventos[i];
+            string t = titulos[i].Text.Trim();
+            if (t != "") e.Titulo = t;
+            Elegidos.Add(e);
+        }
+        DialogResult = DialogResult.OK;
     }
 }
 
@@ -1860,6 +2203,8 @@ class Configuracion : Form
         bSincronizar.Principal += delegate
         {
             if (op.Calendarios.Count == 0) ConectarCalendario();
+            else if (op.Calendarios.TrueForAll(delegate(ConexionCalendario c) { return c.EsImagen; }))
+                ReconocerImagen(true, op.Calendarios[0].Nombre); // solo hay imágenes: no hay nada que descargar
             else overlay.SincronizarCalendarios();
         };
         bSincronizar.Opciones = OpcionesCalendario;
@@ -1908,8 +2253,19 @@ class Configuracion : Form
     {
         List<ToolStripItem> l = new List<ToolStripItem>();
         int n = op.Calendarios.Count;
-        if (n > 0) l.Add(Opcion("Sincronizar ahora", delegate { overlay.SincronizarCalendarios(); }));
+        bool conEnlace = op.Calendarios.Exists(delegate(ConexionCalendario c) { return !c.EsImagen; });
+        if (conEnlace) l.Add(Opcion("Sincronizar ahora", delegate { overlay.SincronizarCalendarios(); }));
         l.Add(Opcion(n > 0 ? "Conectar otro calendario…" : "Conectar un calendario…", delegate { ConectarCalendario(); }));
+
+        // Reconocer eventos en una imagen (se agregan al calendario "Desde imagen", o al que ya exista de ese tipo)
+        ConexionCalendario deImagen = op.Calendarios.Find(delegate(ConexionCalendario c) { return c.EsImagen; });
+        string fuente = deImagen != null ? deImagen.Nombre : "Desde imagen";
+        ToolStripMenuItem imagen = new ToolStripMenuItem(deImagen != null ? "Reconocer otra imagen" : "Reconocer desde una imagen");
+        imagen.DropDownItems.Add(Opcion("Recortar la pantalla…", delegate { ReconocerImagen(true, fuente); }));
+        imagen.DropDownItems.Add(Opcion("Subir una imagen…", delegate { ReconocerImagen(false, fuente); }));
+        foreach (ToolStripItem it in imagen.DropDownItems) it.Padding = new Padding(0, 3, 0, 3);
+        imagen.DropDown.Renderer = new MenuTema();
+        l.Add(imagen);
         if (n == 0) return l.ToArray();
 
         l.Add(new ToolStripSeparator());
@@ -1954,9 +2310,36 @@ class Configuracion : Form
         using (VentanaConectar v = new VentanaConectar(usados))
         {
             if (v.ShowDialog(this) != DialogResult.OK || v.Resultado == null) return;
+            if (v.Resultado.EsImagen)
+            {
+                AgregarDeImagen(v.Resultado.Nombre, v.EventosImagen);
+                return;
+            }
             op.Calendarios.Add(v.Resultado);
         }
         overlay.SincronizarCalendarios();
+        ConstruirEventos();
+    }
+
+    // Recorta la pantalla o sube una imagen y agrega los eventos reconocidos al calendario "fuente".
+    void ReconocerImagen(bool recortar, string fuente)
+    {
+        List<EventoCalendario> eventos = Reconocimiento.Pedir(this, recortar, fuente);
+        if (eventos != null) AgregarDeImagen(fuente, eventos);
+    }
+
+    void AgregarDeImagen(string fuente, List<EventoCalendario> eventos)
+    {
+        if (!op.Calendarios.Exists(delegate(ConexionCalendario c) { return c.Nombre == fuente; }))
+        {
+            ConexionCalendario c = new ConexionCalendario();
+            c.Servicio = ConexionCalendario.SERVICIOS[ConexionCalendario.IMAGEN];
+            c.Nombre = fuente;
+            c.Url = ConexionCalendario.URL_IMAGEN;
+            op.Calendarios.Add(c);
+        }
+        foreach (EventoCalendario e in eventos) e.Fuente = fuente;
+        overlay.AgregarEventosDeImagen(eventos);
         ConstruirEventos();
     }
 
@@ -1999,6 +2382,12 @@ class Configuracion : Form
 
         if (overlay.Sincronizando) { lCalEstado.ForeColor = Tema.Texto2; lCalEstado.Text = "Sincronizando…"; }
         else if (overlay.ErrorCalendario != null) { lCalEstado.ForeColor = Tema.Error; lCalEstado.Text = "No se pudo sincronizar · " + overlay.ErrorCalendario.Replace("\n", " · "); }
+        else if (!overlay.UltimaSincronizacion.HasValue && op.Calendarios.TrueForAll(delegate(ConexionCalendario c) { return c.EsImagen; }))
+        {
+            lCalEstado.ForeColor = Tema.Texto2;
+            lCalEstado.Text = eventos.Count + (eventos.Count == 1 ? " evento reconocido" : " eventos reconocidos") + " en imágenes · " +
+                              (op.AvisoCalendario > 0 ? "aviso " + (op.AvisoCalendario == 60 ? "1 hora" : op.AvisoCalendario + " min") + " antes" : "sin aviso");
+        }
         else if (!overlay.UltimaSincronizacion.HasValue) { lCalEstado.ForeColor = Tema.Texto2; lCalEstado.Text = "Pulsa «Sincronizar calendario» para cargar los eventos."; }
         else
         {
