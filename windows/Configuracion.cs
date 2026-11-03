@@ -1368,6 +1368,158 @@ class RecortePantalla : Form
     }
 }
 
+// Opciones de aviso de un evento (minutos antes; -1 = sin aviso, 0 = a la hora).
+static class Avisos
+{
+    public static readonly string[] TEXTOS = { "Sin aviso", "A la hora del evento", "5 min antes", "10 min antes", "15 min antes",
+                                               "30 min antes", "1 hora antes", "2 horas antes", "1 día antes" };
+    public static readonly int[] MINUTOS = { -1, 0, 5, 10, 15, 30, 60, 120, 1440 };
+
+    // Posición en la lista del valor dado (o del más cercano).
+    public static int Indice(int minutos)
+    {
+        int mejor = 0;
+        for (int i = 0; i < MINUTOS.Length; i++)
+            if (Math.Abs(MINUTOS[i] - minutos) < Math.Abs(MINUTOS[mejor] - minutos)) mejor = i;
+        return mejor;
+    }
+}
+
+// Editar un evento sacado de una imagen: título, día, hora de inicio y fin, aviso; o eliminarlo.
+class VentanaEvento : Form
+{
+    readonly EventoCalendario original;
+    readonly MarcoTexto titulo = new MarcoTexto();
+    readonly SelectorHora inicio = new SelectorHora(), fin = new SelectorHora();
+    readonly BotonModerno dia = new BotonModerno("", false);
+    readonly Desplegable aviso = new Desplegable(Avisos.TEXTOS);
+    readonly Chip todoElDia = new Chip("Todo el día");
+    DateTime fecha;
+    public EventoCalendario Resultado;  // null si se eligió eliminar
+    public int Aviso;
+    public bool Eliminar;
+    static readonly System.Globalization.CultureInfo ES = new System.Globalization.CultureInfo("es-ES");
+
+    public VentanaEvento(EventoCalendario e, int avisoActual)
+    {
+        original = e;
+        fecha = e.Inicio.Date;
+        Text = "Editar evento";
+        Icon = Iconos.Grande;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = MinimizeBox = false;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Tema.Fondo;
+        ForeColor = Tema.Texto;
+        Font = Tema.Normal;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(520, 360);
+
+        Etiqueta("Título", 24, 20);
+        titulo.Fondo = Tema.Fondo;
+        titulo.Text = e.Titulo;
+        titulo.SetBounds(24, 44, 472, 32);
+        Controls.Add(titulo);
+
+        Etiqueta("Día", 24, 90);
+        dia.Fondo = Tema.Fondo;
+        dia.SetBounds(24, 114, 200, 36);
+        dia.Click += delegate
+        {
+            using (VentanaRango v = new VentanaRango(fecha, fecha))
+            {
+                v.Location = PointToScreen(new Point(dia.Left, dia.Bottom + 4));
+                if (v.ShowDialog(this) == DialogResult.OK) { fecha = v.Cal.Desde; MostrarDia(); }
+            }
+        };
+        Controls.Add(dia);
+        MostrarDia();
+        todoElDia.Fondo = Tema.Fondo;
+        todoElDia.Location = new Point(236, 117);
+        todoElDia.Marcado = e.TodoElDia;
+        todoElDia.Cambio += delegate { inicio.Enabled = fin.Enabled = aviso.Enabled = !todoElDia.Marcado; };
+        Controls.Add(todoElDia);
+
+        Etiqueta("Empieza", 24, 164);
+        Etiqueta("Termina", 164, 164);
+        inicio.Fondo = fin.Fondo = Tema.Fondo;
+        inicio.Location = new Point(24, 188);
+        fin.Location = new Point(164, 188);
+        inicio.Hora = e.Inicio.Hour; inicio.Minuto = e.Inicio.Minute;
+        fin.Hora = e.Fin.Hour; fin.Minuto = e.Fin.Minute;
+        Controls.Add(inicio);
+        Controls.Add(fin);
+
+        Etiqueta("Avisar", 304, 164);
+        aviso.Fondo = Tema.Fondo;
+        aviso.SetBounds(304, 192, 192, 32);
+        aviso.Indice = Avisos.Indice(avisoActual);
+        Controls.Add(aviso);
+        inicio.Enabled = fin.Enabled = aviso.Enabled = !e.TodoElDia;
+
+        BotonModerno eliminar = new BotonModerno("Eliminar evento", false), guardar = new BotonModerno("Guardar", true),
+                     cancelar = new BotonModerno("Cancelar", false);
+        eliminar.Fondo = guardar.Fondo = cancelar.Fondo = Tema.Fondo;
+        eliminar.SetBounds(24, 306, 150, 34);
+        guardar.SetBounds(386, 306, 110, 34);
+        cancelar.SetBounds(266, 306, 110, 34);
+        eliminar.Click += delegate { Eliminar = true; DialogResult = DialogResult.OK; };
+        guardar.Click += delegate { Guardar(); };
+        cancelar.Click += delegate { DialogResult = DialogResult.Cancel; };
+        Controls.AddRange(new Control[] { eliminar, guardar, cancelar });
+        AcceptButton = guardar;
+        CancelButton = cancelar;
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Tema.AplicarVentana(this);
+    }
+
+    void Etiqueta(string texto, int x, int y)
+    {
+        Label l = new Label();
+        l.Text = texto;
+        l.Font = Tema.Titulo;
+        l.ForeColor = Tema.Texto;
+        l.BackColor = Tema.Fondo;
+        l.SetBounds(x, y, 200, 22);
+        Controls.Add(l);
+    }
+
+    void MostrarDia()
+    {
+        string d = fecha.ToString("dddd d 'de' MMMM", ES);
+        dia.Text = char.ToUpper(d[0]) + d.Substring(1);
+    }
+
+    void Guardar()
+    {
+        EventoCalendario e = new EventoCalendario();
+        e.Uid = original.Uid;
+        e.Fuente = original.Fuente;
+        e.Titulo = titulo.Text.Trim() == "" ? original.Titulo : titulo.Text.Trim();
+        e.TodoElDia = todoElDia.Marcado;
+        if (e.TodoElDia)
+        {
+            e.Inicio = fecha;
+            e.Fin = fecha.AddDays(1);
+        }
+        else
+        {
+            e.Inicio = fecha.AddHours(inicio.Hora).AddMinutes(inicio.Minuto);
+            e.Fin = fecha.AddHours(fin.Hora).AddMinutes(fin.Minuto);
+            if (e.Fin <= e.Inicio) e.Fin = e.Fin.AddDays(1);
+        }
+        Resultado = e;
+        Aviso = Avisos.MINUTOS[aviso.Indice];
+        DialogResult = DialogResult.OK;
+    }
+}
+
 // Revisión de los eventos reconocidos en una imagen: se pueden quitar y corregir el título antes de agregarlos.
 class VentanaRevision : Form
 {
@@ -2269,7 +2421,7 @@ class Configuracion : Form
         if (n == 0) return l.ToArray();
 
         l.Add(new ToolStripSeparator());
-        ToolStripMenuItem aviso = new ToolStripMenuItem("Avisar antes de cada evento");
+        ToolStripMenuItem aviso = new ToolStripMenuItem("Aviso predeterminado (cada evento puede tener el suyo)");
         int[] minutos = { 0, 5, 10, 15, 30, 60 };
         foreach (int m in minutos)
         {
@@ -2319,6 +2471,19 @@ class Configuracion : Form
         }
         overlay.SincronizarCalendarios();
         ConstruirEventos();
+    }
+
+    // Edita (o elimina) un evento que vino de una imagen.
+    void EditarEvento(EventoCalendario e)
+    {
+        using (VentanaEvento v = new VentanaEvento(e, op.AvisoDe(e)))
+        {
+            if (v.ShowDialog(this) != DialogResult.OK) return;
+            if (v.Eliminar) { overlay.CambiarEvento(e, null); return; }
+            overlay.CambiarEvento(e, v.Resultado);
+            if (!v.Resultado.TodoElDia) op.AvisosEvento[v.Resultado.Clave] = v.Aviso;
+            ConstruirEventos();
+        }
     }
 
     // Recorta la pantalla o sube una imagen y agrega los eventos reconocidos al calendario "fuente".
@@ -2415,29 +2580,43 @@ class Configuracion : Form
             hora.Fondo = Tema.Superficie;
             tarjetaEventos.Controls.Add(hora);
 
+            // A la derecha: cuándo avisar (cada evento puede tener el suyo) y, si viene de una imagen, ✎ para editarlo.
+            EventoCalendario este = e;
+            bool deImagen = op.Calendarios.Exists(delegate(ConexionCalendario c) { return c.EsImagen && c.Nombre == este.Fuente; });
+            int derecha = ANCHO_LISTA - 16;
+            if (deImagen)
+            {
+                BotonModerno editar = new BotonModerno("✎", false);
+                editar.Size = new Size(34, 32);
+                editar.Fondo = Tema.Superficie;
+                editar.Location = new Point(derecha - editar.Width, y + (alto - editar.Height) / 2);
+                editar.Click += delegate { BeginInvoke(new MethodInvoker(delegate { EditarEvento(este); })); };
+                ayuda.SetToolTip(editar, "Editar el título, el día, las horas o el aviso de este evento");
+                tarjetaEventos.Controls.Add(editar);
+                derecha = editar.Left - 8;
+            }
+            if (!e.TodoElDia)
+            {
+                Desplegable avisar = new Desplegable(Avisos.TEXTOS);
+                avisar.Size = new Size(160, 32);
+                avisar.Fondo = Tema.Superficie;
+                avisar.Indice = Avisos.Indice(op.AvisoDe(e));
+                avisar.Location = new Point(derecha - avisar.Width, y + (alto - avisar.Height) / 2);
+                avisar.Cambio += delegate { op.AvisosEvento[este.Clave] = Avisos.MINUTOS[avisar.Indice]; };
+                ayuda.SetToolTip(avisar, "Cuándo suena el despertador para este evento");
+                tarjetaEventos.Controls.Add(avisar);
+                derecha = avisar.Left - 8;
+            }
+
             Label titulo = new Label(), detalle = new Label();
             titulo.AutoEllipsis = detalle.AutoEllipsis = true;
-            Etiqueta(tarjetaEventos, titulo, e.Titulo, hora.Right + 12, y + 7, 300, 20, Tema.Normal, Tema.Texto, Tema.Superficie);
+            int anchoTexto = derecha - (hora.Right + 12);
+            Etiqueta(tarjetaEventos, titulo, e.Titulo, hora.Right + 12, y + 7, anchoTexto, 20, Tema.Normal, Tema.Texto, Tema.Superficie);
             string dia = e.Inicio.Date == DateTime.Today ? "Hoy" : e.Inicio.Date == DateTime.Today.AddDays(1) ? "Mañana"
                        : Mayuscula(e.Inicio.ToString("dddd d MMM", ES).Replace(".", ""));
             string horas = e.TodoElDia ? "" : " · " + e.Inicio.ToString("HH:mm") + " – " + e.Fin.ToString("HH:mm");
-            Etiqueta(tarjetaEventos, detalle, dia + horas + " · " + e.Fuente, hora.Right + 12, y + 27, 300, 18, Tema.Pequena, Tema.Texto2, Tema.Superficie);
-
-            if (!e.TodoElDia && op.AvisoCalendario > 0)
-            {
-                string clave = e.Clave;
-                Interruptor avisar = new Interruptor();
-                avisar.Marcado = !op.EventosSilenciados.Contains(clave);
-                avisar.Fondo = Tema.Superficie;
-                avisar.Location = new Point(ANCHO_LISTA - 16 - avisar.Width, y + (alto - avisar.Height) / 2);
-                avisar.Cambio += delegate
-                {
-                    if (avisar.Marcado) op.EventosSilenciados.Remove(clave);
-                    else op.EventosSilenciados.Add(clave);
-                };
-                ayuda.SetToolTip(avisar, "Hacer sonar el despertador " + (op.AvisoCalendario == 60 ? "1 hora" : op.AvisoCalendario + " minutos") + " antes");
-                tarjetaEventos.Controls.Add(avisar);
-            }
+            Etiqueta(tarjetaEventos, detalle, dia + horas + " · " + e.Fuente, hora.Right + 12, y + 27, anchoTexto, 18, Tema.Pequena, Tema.Texto2, Tema.Superficie);
+            ayuda.SetToolTip(titulo, e.Titulo);
             y += alto;
             if (e != eventos[eventos.Count - 1]) tarjetaEventos.Separadores.Add(y);
         }

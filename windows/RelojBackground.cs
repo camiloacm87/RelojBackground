@@ -87,7 +87,19 @@ class Opciones
     public bool? IniciarConWindows;        // null = no está en config.ini (versiones anteriores)
     public List<ConexionCalendario> Calendarios = new List<ConexionCalendario>(); // calendarios sincronizados (enlaces iCal)
     public int AvisoCalendario = 10;       // minutos antes de cada evento en que suena el despertador (0 = sin aviso)
-    public HashSet<string> EventosSilenciados = new HashSet<string>(); // eventos sin aviso (Clave del evento)
+    public HashSet<string> EventosSilenciados = new HashSet<string>(); // eventos sin aviso (versiones anteriores)
+    // Aviso elegido para un evento concreto (Clave del evento → minutos antes; -1 = sin aviso, 0 = a la hora).
+    public Dictionary<string, int> AvisosEvento = new Dictionary<string, int>();
+
+    // Minutos antes de un evento en que suena el despertador (-1 = no suena).
+    public int AvisoDe(EventoCalendario e)
+    {
+        if (e.TodoElDia) return -1;
+        int m;
+        if (AvisosEvento.TryGetValue(e.Clave, out m)) return m;
+        if (EventosSilenciados.Contains(e.Clave)) return -1;
+        return AvisoCalendario > 0 ? AvisoCalendario : -1;
+    }
 
     public static readonly string[] VERTICAL = { "arriba", "centro", "abajo" }, HORIZONTAL = { "izquierda", "centro", "derecha" };
 
@@ -167,6 +179,7 @@ class Opciones
         o.Alarmas = CopiarAlarmas(Alarmas);
         o.Calendarios = CopiarCalendarios(Calendarios);
         o.EventosSilenciados = new HashSet<string>(EventosSilenciados);
+        o.AvisosEvento = new Dictionary<string, int>(AvisosEvento);
         return o;
     }
 
@@ -197,6 +210,7 @@ class Opciones
         Calendarios = CopiarCalendarios(o.Calendarios);
         AvisoCalendario = o.AvisoCalendario;
         EventosSilenciados = new HashSet<string>(o.EventosSilenciados);
+        AvisosEvento = new Dictionary<string, int>(o.AvisosEvento);
     }
 
     // Configuración guardada en %LOCALAPPDATA%\RelojBackground\config.ini (clave=valor).
@@ -243,6 +257,10 @@ class Opciones
                         break;
                     case "aviso_calendario": AvisoCalendario = Math.Max(0, Math.Min(240, int.Parse(v))); break;
                     case "silenciado": EventosSilenciados.Add(v); break;
+                    case "aviso_evento": // clave|minutos (la clave ya lleva un |)
+                        int corte = v.LastIndexOf('|');
+                        if (corte > 0) AvisosEvento[v.Substring(0, corte)] = int.Parse(v.Substring(corte + 1));
+                        break;
                     default:
                         if (k.StartsWith("atajo."))
                         {
@@ -285,6 +303,9 @@ class Opciones
         string hoy = DateTime.Today.ToString("yyyyMMdd");
         foreach (string s in EventosSilenciados)
             if (s.Length >= 12 && string.CompareOrdinal(s.Substring(s.Length - 12, 8), hoy) >= 0) lineas.Add("silenciado=" + s);
+        foreach (KeyValuePair<string, int> a in AvisosEvento)
+            if (a.Key.Length >= 12 && string.CompareOrdinal(a.Key.Substring(a.Key.Length - 12, 8), hoy) >= 0)
+                lineas.Add("aviso_evento=" + a.Key + "|" + a.Value);
         foreach (Alarma a in Alarmas) lineas.Add("alarma=" + a.Texto());
         File.WriteAllLines(ArchivoConfig, lineas.ToArray());
     }
@@ -1829,6 +1850,26 @@ class Overlay : Form
         catch { }
     }
 
+    // Cambia un evento sacado de una imagen (título, día u horas) o lo quita si "nuevo" es null.
+    // Si cambia la hora, el aviso elegido para ese evento pasa a la nueva.
+    public void CambiarEvento(EventoCalendario original, EventoCalendario nuevo)
+    {
+        int i = Eventos.IndexOf(original);
+        if (i < 0) return;
+        int aviso;
+        bool teniaAviso = op.AvisosEvento.TryGetValue(original.Clave, out aviso);
+        op.AvisosEvento.Remove(original.Clave);
+        if (nuevo == null) Eventos.RemoveAt(i);
+        else
+        {
+            Eventos[i] = nuevo;
+            if (teniaAviso) op.AvisosEvento[nuevo.Clave] = aviso;
+            Eventos.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
+        }
+        GuardarEventos();
+        if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
+    }
+
     // Añade eventos reconocidos en una imagen (los repetidos se reemplazan; los ya pasados se descartan).
     public void AgregarEventosDeImagen(List<EventoCalendario> nuevos)
     {
@@ -1919,11 +1960,11 @@ class Overlay : Form
 
         // Aviso de los eventos del calendario, unos minutos antes de que empiecen.
         // (Los calendarios solo se descargan al pulsar "Sincronizar calendario"; aquí se usan los ya guardados.)
-        if (op.AvisoCalendario > 0)
-            foreach (EventoCalendario e in Eventos)
+        foreach (EventoCalendario e in Eventos)
             {
-                if (e.TodoElDia || op.EventosSilenciados.Contains(e.Clave)) continue;
-                DateTime aviso = e.Inicio.AddMinutes(-op.AvisoCalendario);
+                int minutos = op.AvisoDe(e); // el elegido para ese evento, o el general
+                if (minutos < 0) continue;
+                DateTime aviso = e.Inicio.AddMinutes(-minutos);
                 if (aviso.Date != ahora.Date || aviso.Hour != ahora.Hour || aviso.Minute != ahora.Minute) continue;
                 if (alarmasDisparadas.Add("calendario|" + e.Clave)) SonarAlarma(e.Inicio.ToString("HH:mm"), e.Titulo);
             }
