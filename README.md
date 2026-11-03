@@ -25,6 +25,9 @@
 - **Varias pantallas:** en todas o en una concreta (con botón para identificar cada monitor).
 - **Alarmas:** hasta 5, para todos los días, días laborables, solo hoy o un rango de fechas. Al sonar aparece
   un despertador animado (y un pitido opcional); se apaga con un clic sobre él.
+- **Calendario (Windows):** botón **Sincronizar calendario** para cargar tus eventos de Google, Outlook, iCloud u otro
+  servicio (con su enlace iCal privado). Aparecen en la lista de alarmas y el despertador avisa minutos antes de cada uno.
+  Solo se conecta cuando pulsas el botón.
 - **Cronómetro:** aparece en una pequeña píldora debajo del reloj mientras tiene tiempo.
 - **Atajos de teclado configurables:** por defecto solo `Ctrl+Alt+I` (mostrar/ocultar) y `Ctrl+Alt+C` (configuración).
 - **Inicio automático** con Windows o con el Mac.

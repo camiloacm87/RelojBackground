@@ -85,6 +85,9 @@ class Opciones
     public List<Alarma> Alarmas = new List<Alarma>();
     public bool SonidoAlarma = true;
     public bool? IniciarConWindows;        // null = no está en config.ini (versiones anteriores)
+    public List<ConexionCalendario> Calendarios = new List<ConexionCalendario>(); // calendarios sincronizados (enlaces iCal)
+    public int AvisoCalendario = 10;       // minutos antes de cada evento en que suena el despertador (0 = sin aviso)
+    public HashSet<string> EventosSilenciados = new HashSet<string>(); // eventos sin aviso (Clave del evento)
 
     public static readonly string[] VERTICAL = { "arriba", "centro", "abajo" }, HORIZONTAL = { "izquierda", "centro", "derecha" };
 
@@ -162,6 +165,8 @@ class Opciones
         Opciones o = (Opciones)MemberwiseClone();
         o.Atajos = (Atajo[])Atajos.Clone();
         o.Alarmas = CopiarAlarmas(Alarmas);
+        o.Calendarios = CopiarCalendarios(Calendarios);
+        o.EventosSilenciados = new HashSet<string>(EventosSilenciados);
         return o;
     }
 
@@ -169,6 +174,13 @@ class Opciones
     {
         List<Alarma> l = new List<Alarma>();
         foreach (Alarma a in origen) l.Add(a.Copia());
+        return l;
+    }
+
+    static List<ConexionCalendario> CopiarCalendarios(List<ConexionCalendario> origen)
+    {
+        List<ConexionCalendario> l = new List<ConexionCalendario>();
+        foreach (ConexionCalendario c in origen) l.Add(c.Copia());
         return l;
     }
 
@@ -182,6 +194,9 @@ class Opciones
         Atajos = (Atajo[])o.Atajos.Clone();
         Alarmas = CopiarAlarmas(o.Alarmas);
         SonidoAlarma = o.SonidoAlarma;
+        Calendarios = CopiarCalendarios(o.Calendarios);
+        AvisoCalendario = o.AvisoCalendario;
+        EventosSilenciados = new HashSet<string>(o.EventosSilenciados);
     }
 
     // Configuración guardada en %LOCALAPPDATA%\RelojBackground\config.ini (clave=valor).
@@ -222,6 +237,12 @@ class Opciones
                         break;
                     case "sonido": SonidoAlarma = v == "1"; break;
                     case "inicio": IniciarConWindows = v == "1"; break;
+                    case "calendario":
+                        ConexionCalendario cal = ConexionCalendario.Leer(v);
+                        if (cal != null) Calendarios.Add(cal);
+                        break;
+                    case "aviso_calendario": AvisoCalendario = Math.Max(0, Math.Min(240, int.Parse(v))); break;
+                    case "silenciado": EventosSilenciados.Add(v); break;
                     default:
                         if (k.StartsWith("atajo."))
                         {
@@ -258,6 +279,12 @@ class Opciones
         for (int i = 0; i < Acciones.Claves.Length; i++) lineas.Add("atajo." + Acciones.Claves[i] + "=" + Atajos[i].Texto());
         lineas.Add("sonido=" + (SonidoAlarma ? 1 : 0));
         if (IniciarConWindows.HasValue) lineas.Add("inicio=" + (IniciarConWindows.Value ? 1 : 0));
+        lineas.Add("aviso_calendario=" + AvisoCalendario);
+        foreach (ConexionCalendario c in Calendarios) lineas.Add("calendario=" + c.Texto());
+        // Solo se recuerdan los silencios de eventos que aún no han pasado (la clave termina en la fecha yyyyMMddHHmm).
+        string hoy = DateTime.Today.ToString("yyyyMMdd");
+        foreach (string s in EventosSilenciados)
+            if (s.Length >= 12 && string.CompareOrdinal(s.Substring(s.Length - 12, 8), hoy) >= 0) lineas.Add("silenciado=" + s);
         foreach (Alarma a in Alarmas) lineas.Add("alarma=" + a.Texto());
         File.WriteAllLines(ArchivoConfig, lineas.ToArray());
     }
@@ -602,6 +629,357 @@ static class MenuInicio
     }
 }
 
+// ---------- Calendarios (enlaces iCal de Google, Outlook, iCloud u otros) ----------
+
+// Un calendario sincronizado. La URL es la dirección privada en formato iCal: funciona como una contraseña,
+// por eso solo se guarda en config.ini (que no se sube a GitHub).
+class ConexionCalendario
+{
+    public static readonly string[] SERVICIOS = { "Google", "Outlook", "iCloud", "Otro" };
+
+    public string Servicio = "Google", Nombre = "Google", Url = "";
+
+    public ConexionCalendario Copia() { return (ConexionCalendario)MemberwiseClone(); }
+
+    // En config.ini: calendario=Google|Trabajo|https://calendar.google.com/calendar/ical/.../basic.ics
+    public string Texto() { return Servicio + "|" + Nombre.Replace("|", " ") + "|" + Url; }
+
+    public static ConexionCalendario Leer(string s)
+    {
+        string[] p = s.Split(new char[] { '|' }, 3);
+        if (p.Length < 3 || p[2].Trim() == "") return null;
+        ConexionCalendario c = new ConexionCalendario();
+        c.Servicio = p[0].Trim();
+        c.Nombre = p[1].Trim();
+        c.Url = p[2].Trim();
+        return c;
+    }
+}
+
+class EventoCalendario
+{
+    public string Uid = "", Titulo = "", Fuente = "";
+    public DateTime Inicio, Fin;
+    public bool TodoElDia;
+
+    // Identifica una aparición concreta del evento (los que se repiten tienen el mismo Uid).
+    public string Clave { get { return Uid + "|" + Inicio.ToString("yyyyMMddHHmm"); } }
+}
+
+// Lee calendarios en formato iCal (.ics): eventos sueltos, de todo el día y que se repiten (RRULE).
+static class ICal
+{
+    static ICal()
+    {
+        // Google, Outlook e iCloud solo aceptan TLS 1.2 o superior.
+        try { System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072; } catch { }
+    }
+
+    // webcal:// (iCloud y otros) es lo mismo que https://
+    public static string Normalizar(string url)
+    {
+        url = (url ?? "").Trim();
+        if (url.StartsWith("webcal://", StringComparison.OrdinalIgnoreCase)) url = "https://" + url.Substring(9);
+        return url;
+    }
+
+    public static List<EventoCalendario> Descargar(string url, string fuente, DateTime desde, DateTime hasta)
+    {
+        url = Normalizar(url);
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            throw new Exception("El enlace debe empezar por https:// o webcal://");
+        string texto;
+        try
+        {
+            System.Net.HttpWebRequest req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
+            req.UserAgent = Program.NOMBRE;
+            req.Timeout = 20000;
+            req.AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate;
+            using (System.Net.WebResponse resp = req.GetResponse())
+            using (StreamReader sr = new StreamReader(resp.GetResponseStream(), System.Text.Encoding.UTF8))
+                texto = sr.ReadToEnd();
+        }
+        catch (System.Net.WebException ex)
+        {
+            System.Net.HttpWebResponse r = ex.Response as System.Net.HttpWebResponse;
+            if (r != null && ((int)r.StatusCode == 404 || (int)r.StatusCode == 403 || (int)r.StatusCode == 401))
+                throw new Exception("el servicio no encontró el calendario. Revisa que el enlace esté completo y siga activo.");
+            throw new Exception("no se pudo conectar (" + ex.Message.TrimEnd('.') + ").");
+        }
+        if (texto.IndexOf("BEGIN:VCALENDAR", StringComparison.OrdinalIgnoreCase) < 0)
+            throw new Exception("el enlace no es un calendario iCal (.ics). Copia la dirección en formato iCal.");
+        return Leer(texto, fuente, desde, hasta);
+    }
+
+    // Eventos (y repeticiones) que empiezan entre desde y hasta.
+    public static List<EventoCalendario> Leer(string texto, string fuente, DateTime desde, DateTime hasta)
+    {
+        // Las líneas largas vienen partidas: las que empiezan con espacio o tabulador continúan la anterior.
+        List<string> lineas = new List<string>();
+        foreach (string l in texto.Replace("\r\n", "\n").Split('\n'))
+        {
+            if ((l.StartsWith(" ") || l.StartsWith("\t")) && lineas.Count > 0) lineas[lineas.Count - 1] += l.Substring(1);
+            else lineas.Add(l.TrimEnd('\r'));
+        }
+
+        List<Dictionary<string, Propiedad>> eventos = new List<Dictionary<string, Propiedad>>();
+        List<List<Propiedad>> exdates = new List<List<Propiedad>>();
+        Dictionary<string, Propiedad> actual = null;
+        List<Propiedad> exActual = null;
+        int anidado = 0; // VALARM y otros bloques dentro del evento
+        foreach (string l in lineas)
+        {
+            if (l.Equals("BEGIN:VEVENT", StringComparison.OrdinalIgnoreCase)) { actual = new Dictionary<string, Propiedad>(); exActual = new List<Propiedad>(); anidado = 0; continue; }
+            if (actual == null) continue;
+            if (l.Equals("END:VEVENT", StringComparison.OrdinalIgnoreCase)) { eventos.Add(actual); exdates.Add(exActual); actual = null; continue; }
+            if (l.StartsWith("BEGIN:", StringComparison.OrdinalIgnoreCase)) { anidado++; continue; }
+            if (l.StartsWith("END:", StringComparison.OrdinalIgnoreCase)) { anidado--; continue; }
+            if (anidado > 0) continue;
+            Propiedad p = Propiedad.Leer(l);
+            if (p == null) continue;
+            if (p.Nombre == "EXDATE") exActual.Add(p);
+            else if (!actual.ContainsKey(p.Nombre)) actual[p.Nombre] = p;
+        }
+
+        // Apariciones modificadas de eventos que se repiten (se quitan de la serie y se añaden como evento propio).
+        HashSet<string> modificadas = new HashSet<string>();
+        foreach (Dictionary<string, Propiedad> e in eventos)
+            if (e.ContainsKey("RECURRENCE-ID") && e.ContainsKey("UID"))
+            {
+                bool dia;
+                modificadas.Add(e["UID"].Valor + "|" + Fecha(e["RECURRENCE-ID"], out dia).ToString("yyyyMMddHHmm"));
+            }
+
+        List<EventoCalendario> res = new List<EventoCalendario>();
+        for (int i = 0; i < eventos.Count; i++)
+        {
+            Dictionary<string, Propiedad> e = eventos[i];
+            if (!e.ContainsKey("DTSTART")) continue;
+            if (e.ContainsKey("STATUS") && e["STATUS"].Valor.ToUpperInvariant() == "CANCELLED") continue;
+            bool todoElDia;
+            DateTime inicio = Fecha(e["DTSTART"], out todoElDia);
+            bool d2;
+            DateTime fin = e.ContainsKey("DTEND") ? Fecha(e["DTEND"], out d2) : (todoElDia ? inicio.AddDays(1) : inicio.AddHours(1));
+            TimeSpan duracion = fin > inicio ? fin - inicio : TimeSpan.Zero;
+            string uid = e.ContainsKey("UID") ? e["UID"].Valor : Guid.NewGuid().ToString();
+            string titulo = e.ContainsKey("SUMMARY") ? Desescapar(e["SUMMARY"].Valor) : "(Sin título)";
+
+            HashSet<DateTime> excluidas = new HashSet<DateTime>();
+            foreach (Propiedad ex in exdates[i])
+                foreach (string v in ex.Valor.Split(','))
+                {
+                    bool d3;
+                    excluidas.Add(Fecha(new Propiedad { Nombre = "EXDATE", Parametros = ex.Parametros, Valor = v }, out d3));
+                }
+
+            List<DateTime> apariciones = e.ContainsKey("RRULE") && !e.ContainsKey("RECURRENCE-ID")
+                ? Repeticiones(inicio, e["RRULE"].Valor, desde.AddDays(-1), hasta)
+                : new List<DateTime> { inicio };
+
+            foreach (DateTime a in apariciones)
+            {
+                if (excluidas.Contains(a)) continue;
+                if (!e.ContainsKey("RECURRENCE-ID") && e.ContainsKey("RRULE") && modificadas.Contains(uid + "|" + a.ToString("yyyyMMddHHmm"))) continue;
+                DateTime f = a + duracion;
+                if (f <= desde || a >= hasta) continue; // fuera del rango (los que ya empezaron y siguen, se muestran)
+                EventoCalendario ev = new EventoCalendario();
+                ev.Uid = uid;
+                ev.Titulo = titulo;
+                ev.Fuente = fuente;
+                ev.Inicio = a;
+                ev.Fin = f;
+                ev.TodoElDia = todoElDia;
+                res.Add(ev);
+            }
+        }
+        res.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
+        return res;
+    }
+
+    // Una línea "NOMBRE;PARAM=valor:VALOR".
+    class Propiedad
+    {
+        public string Nombre = "", Valor = "";
+        public Dictionary<string, string> Parametros = new Dictionary<string, string>();
+
+        public static Propiedad Leer(string l)
+        {
+            int dosPuntos = -1;
+            bool comillas = false;
+            for (int i = 0; i < l.Length; i++)
+            {
+                if (l[i] == '"') comillas = !comillas;
+                if (l[i] == ':' && !comillas) { dosPuntos = i; break; }
+            }
+            if (dosPuntos <= 0) return null;
+            Propiedad p = new Propiedad();
+            string[] partes = l.Substring(0, dosPuntos).Split(';');
+            p.Nombre = partes[0].ToUpperInvariant();
+            for (int i = 1; i < partes.Length; i++)
+            {
+                int igual = partes[i].IndexOf('=');
+                if (igual > 0) p.Parametros[partes[i].Substring(0, igual).ToUpperInvariant()] = partes[i].Substring(igual + 1).Trim('"');
+            }
+            p.Valor = l.Substring(dosPuntos + 1);
+            return p;
+        }
+    }
+
+    // Fecha u hora en hora local. Admite fechas (todo el día), UTC (…Z) y horas con zona horaria (TZID).
+    static DateTime Fecha(Propiedad p, out bool soloFecha)
+    {
+        string v = p.Valor.Trim();
+        System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
+        soloFecha = v.Length == 8 || (p.Parametros.ContainsKey("VALUE") && p.Parametros["VALUE"].ToUpperInvariant() == "DATE");
+        if (soloFecha) return DateTime.ParseExact(v.Substring(0, 8), "yyyyMMdd", inv);
+        bool utc = v.EndsWith("Z");
+        DateTime d = DateTime.ParseExact(v.TrimEnd('Z').Substring(0, 15), "yyyyMMdd'T'HHmmss", inv);
+        if (utc) return DateTime.SpecifyKind(d, DateTimeKind.Utc).ToLocalTime();
+        string tz;
+        if (p.Parametros.TryGetValue("TZID", out tz))
+        {
+            TimeZoneInfo zona = Zona(tz);
+            if (zona != null)
+                try { return TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(d, DateTimeKind.Unspecified), zona, TimeZoneInfo.Local); }
+                catch { }
+        }
+        return d; // sin zona: hora local
+    }
+
+    // Zonas horarias IANA (las que usan los calendarios) → nombres de Windows. Las más comunes.
+    static TimeZoneInfo Zona(string iana)
+    {
+        string[,] mapa = {
+            { "America/Lima", "SA Pacific Standard Time" }, { "America/Bogota", "SA Pacific Standard Time" },
+            { "America/Guayaquil", "SA Pacific Standard Time" }, { "America/Panama", "SA Pacific Standard Time" },
+            { "America/Mexico_City", "Central Standard Time (Mexico)" }, { "America/Santiago", "Pacific SA Standard Time" },
+            { "America/Argentina/Buenos_Aires", "Argentina Standard Time" }, { "America/Buenos_Aires", "Argentina Standard Time" },
+            { "America/Caracas", "Venezuela Standard Time" }, { "America/La_Paz", "SA Western Standard Time" },
+            { "America/Sao_Paulo", "E. South America Standard Time" }, { "America/Montevideo", "Montevideo Standard Time" },
+            { "America/Asuncion", "Paraguay Standard Time" }, { "America/New_York", "Eastern Standard Time" },
+            { "America/Chicago", "Central Standard Time" }, { "America/Denver", "Mountain Standard Time" },
+            { "America/Los_Angeles", "Pacific Standard Time" }, { "Europe/Madrid", "Romance Standard Time" },
+            { "Europe/London", "GMT Standard Time" }, { "Europe/Paris", "Romance Standard Time" },
+            { "Europe/Berlin", "W. Europe Standard Time" }, { "UTC", "UTC" }, { "Etc/UTC", "UTC" }, { "GMT", "UTC" },
+        };
+        for (int i = 0; i < mapa.GetLength(0); i++)
+            if (string.Equals(mapa[i, 0], iana, StringComparison.OrdinalIgnoreCase))
+                try { return TimeZoneInfo.FindSystemTimeZoneById(mapa[i, 1]); } catch { return null; }
+        try { return TimeZoneInfo.FindSystemTimeZoneById(iana); } catch { return null; } // Outlook usa nombres de Windows
+    }
+
+    static string Desescapar(string s)
+    {
+        return s.Replace("\\n", " ").Replace("\\N", " ").Replace("\\,", ",").Replace("\\;", ";").Replace("\\\\", "\\").Trim();
+    }
+
+    static readonly string[] DIAS = { "SU", "MO", "TU", "WE", "TH", "FR", "SA" }; // como DayOfWeek
+
+    // Fechas de un evento que se repite (RRULE: FREQ, INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY), hasta "hasta".
+    static List<DateTime> Repeticiones(DateTime inicio, string regla, DateTime desde, DateTime hasta)
+    {
+        Dictionary<string, string> r = new Dictionary<string, string>();
+        foreach (string parte in regla.Split(';'))
+        {
+            int igual = parte.IndexOf('=');
+            if (igual > 0) r[parte.Substring(0, igual).ToUpperInvariant()] = parte.Substring(igual + 1);
+        }
+        string frec = r.ContainsKey("FREQ") ? r["FREQ"].ToUpperInvariant() : "DAILY";
+        int intervalo = r.ContainsKey("INTERVAL") ? Math.Max(1, int.Parse(r["INTERVAL"])) : 1;
+        int cuenta = r.ContainsKey("COUNT") ? int.Parse(r["COUNT"]) : int.MaxValue;
+        DateTime limite = hasta;
+        if (r.ContainsKey("UNTIL"))
+        {
+            bool d;
+            DateTime u = Fecha(new Propiedad { Nombre = "UNTIL", Valor = r["UNTIL"] }, out d);
+            if (d) u = u.AddDays(1).AddTicks(-1);
+            if (u < limite) limite = u;
+        }
+        List<string> porDia = r.ContainsKey("BYDAY") ? new List<string>(r["BYDAY"].ToUpperInvariant().Split(',')) : new List<string>();
+        List<int> porDiaMes = new List<int>();
+        if (r.ContainsKey("BYMONTHDAY")) foreach (string s in r["BYMONTHDAY"].Split(',')) porDiaMes.Add(int.Parse(s));
+
+        List<DateTime> res = new List<DateTime>();
+        int n = 0;
+        TimeSpan hora = inicio.TimeOfDay;
+        for (int paso = 0; paso < 2000 && n < cuenta; paso++)
+        {
+            List<DateTime> candidatos = new List<DateTime>();
+            if (frec == "DAILY") candidatos.Add(inicio.AddDays(paso * intervalo));
+            else if (frec == "WEEKLY")
+            {
+                DateTime lunes = inicio.Date.AddDays(-(((int)inicio.DayOfWeek + 6) % 7)).AddDays(7 * paso * intervalo);
+                if (porDia.Count == 0) candidatos.Add(inicio.AddDays(7 * paso * intervalo));
+                else for (int k = 0; k < 7; k++)
+                    {
+                        DateTime dia = lunes.AddDays(k);
+                        if (porDia.Contains(DIAS[(int)dia.DayOfWeek])) candidatos.Add(dia + hora);
+                    }
+            }
+            else if (frec == "MONTHLY")
+            {
+                DateTime mes = new DateTime(inicio.Year, inicio.Month, 1).AddMonths(paso * intervalo);
+                if (porDia.Count > 0)
+                    foreach (string bd in porDia) { DateTime x; if (DiaN(mes, bd, out x)) candidatos.Add(x + hora); }
+                else foreach (int dm in porDiaMes.Count > 0 ? porDiaMes : new List<int> { inicio.Day })
+                    {
+                        int dias = DateTime.DaysInMonth(mes.Year, mes.Month);
+                        int dd = dm > 0 ? dm : dias + dm + 1;
+                        if (dd >= 1 && dd <= dias) candidatos.Add(new DateTime(mes.Year, mes.Month, dd) + hora);
+                    }
+            }
+            else if (frec == "YEARLY")
+            {
+                int anio = inicio.Year + paso * intervalo;
+                if (inicio.Month == 2 && inicio.Day == 29 && !DateTime.IsLeapYear(anio)) continue;
+                candidatos.Add(new DateTime(anio, inicio.Month, inicio.Day) + hora);
+            }
+            else break;
+
+            candidatos.Sort();
+            bool pasado = false;
+            foreach (DateTime c in candidatos)
+            {
+                if (c < inicio) continue;
+                if (c > limite || n >= cuenta) { pasado = true; break; }
+                n++;
+                if (c >= desde) res.Add(c);
+            }
+            if (pasado) break;
+        }
+        return res;
+    }
+
+    // "2TU" = segundo martes del mes, "-1FR" = último viernes, "MO" = (en MONTHLY sin número) primer lunes.
+    static bool DiaN(DateTime mes, string bd, out DateTime dia)
+    {
+        dia = mes;
+        string codigo = bd.Length >= 2 ? bd.Substring(bd.Length - 2) : bd;
+        int dow = Array.IndexOf(DIAS, codigo);
+        if (dow < 0) return false;
+        int num = 1;
+        if (bd.Length > 2 && !int.TryParse(bd.Substring(0, bd.Length - 2), out num)) return false;
+        int dias = DateTime.DaysInMonth(mes.Year, mes.Month);
+        if (num > 0)
+        {
+            DateTime d = mes;
+            while ((int)d.DayOfWeek != dow) d = d.AddDays(1);
+            d = d.AddDays(7 * (num - 1));
+            if (d.Month != mes.Month) return false;
+            dia = d;
+        }
+        else
+        {
+            DateTime d = new DateTime(mes.Year, mes.Month, dias);
+            while ((int)d.DayOfWeek != dow) d = d.AddDays(-1);
+            d = d.AddDays(7 * (num + 1));
+            if (d.Month != mes.Month) return false;
+            dia = d;
+        }
+        return true;
+    }
+}
+
 // ---------- Colores ----------
 
 static class Paleta
@@ -876,10 +1254,12 @@ static class Reloj
 
     // Despertador que se sacude cuando suena la alarma (lienzo de DESPERTADOR_ANCHO x DESPERTADOR_ALTO).
     // angulo: inclinación actual en grados · pulso: 0..1 para las ondas de sonido.
-    public const int DESPERTADOR_ANCHO = 240, DESPERTADOR_ALTO = 268;
+    public const int DESPERTADOR_ANCHO = 280, DESPERTADOR_ALTO = 290;
 
-    public static void DibujarDespertador(Graphics g, Opciones o, DateTime ahora, float angulo, float pulso, string hora)
+    // titulo: el del evento del calendario (vacío en las alarmas normales); se escribe bajo la hora.
+    public static void DibujarDespertador(Graphics g, Opciones o, DateTime ahora, float angulo, float pulso, string hora, string titulo)
     {
+        g.TranslateTransform(20, 0); // el lienzo es más ancho que el dibujo, para que quepan títulos largos
         g.SmoothingMode = SmoothingMode.AntiAlias;
         Color ac = Paleta.Colores(o, ahora)[0];
         const float cx = 120, cy = 116;
@@ -950,7 +1330,13 @@ static class Reloj
         g.Restore(estado);
 
         Linea(g, 120, 220, new Parte(hora, 30, SEMI, BLANCO));
-        Linea(g, 120, 252, new Parte("Clic para detener", 13, NORMAL, TENUE));
+        if (!string.IsNullOrEmpty(titulo))
+        {
+            string t = titulo.Length > 30 ? titulo.Substring(0, 29).TrimEnd() + "…" : titulo;
+            Linea(g, 120, 250, new Parte(t, 15, SEMI, ac));
+            Linea(g, 120, 276, new Parte("Clic para detener", 12, NORMAL, TENUE));
+        }
+        else Linea(g, 120, 252, new Parte("Clic para detener", 13, NORMAL, TENUE));
     }
 
     // ---------- Piezas comunes ----------
@@ -1214,6 +1600,8 @@ class Overlay : Form
         bandeja.DoubleClick += delegate { if (AlarmaSonando) DetenerAlarma(); else AbrirConfiguracion(); };
         bandeja.Visible = true;
 
+        CargarEventos(); // eventos de la última sincronización del calendario
+
         // Las alarmas se vigilan siempre, aunque el reloj esté oculto.
         vigilante.Interval = 500;
         vigilante.Tick += delegate { VigilarAlarmas(); };
@@ -1258,14 +1646,144 @@ class Overlay : Form
     readonly HashSet<string> alarmasDisparadas = new HashSet<string>();
     System.Media.SoundPlayer sonido;
     DateTime inicioAlarma;
-    string horaAlarma = "";
+    string horaAlarma = "", tituloAlarma = "";
 
     public bool AlarmaSonando { get { return ventanasAlarma.Count > 0; } }
+
+    // ---------- Calendarios sincronizados ----------
+
+    // Eventos de la última sincronización (8 días desde ese momento). Se guardan en eventos.cache para que los
+    // avisos sigan funcionando tras reiniciar la PC; solo se descargan de nuevo al pulsar "Sincronizar calendario".
+    public List<EventoCalendario> Eventos = new List<EventoCalendario>();
+    public DateTime? UltimaSincronizacion { get; private set; }
+    public string ErrorCalendario { get; private set; } // null si la última sincronización fue bien
+    public bool Sincronizando { get { return sincronizando; } }
+    public event EventHandler CalendarioActualizado;
+    bool sincronizando;
+
+    static string ArchivoEventos { get { return Path.Combine(Opciones.Carpeta, "eventos.cache"); } }
+
+    // Formato: primera línea "sincronizado=yyyyMMddHHmm"; luego uid, inicio, fin, todo el día, calendario y título
+    // separados por tabuladores.
+    void GuardarEventos()
+    {
+        try
+        {
+            List<string> l = new List<string>();
+            if (UltimaSincronizacion.HasValue) l.Add("sincronizado=" + UltimaSincronizacion.Value.ToString("yyyyMMddHHmm"));
+            foreach (EventoCalendario e in Eventos)
+                l.Add(string.Join("\t", new string[] { e.Uid.Replace("\t", " "), e.Inicio.ToString("yyyyMMddHHmm"), e.Fin.ToString("yyyyMMddHHmm"),
+                                                       e.TodoElDia ? "1" : "0", e.Fuente.Replace("\t", " "), e.Titulo.Replace("\t", " ") }));
+            Directory.CreateDirectory(Opciones.Carpeta);
+            File.WriteAllLines(ArchivoEventos, l.ToArray());
+        }
+        catch { }
+    }
+
+    void CargarEventos()
+    {
+        try
+        {
+            if (!File.Exists(ArchivoEventos)) return;
+            System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
+            List<EventoCalendario> l = new List<EventoCalendario>();
+            foreach (string linea in File.ReadAllLines(ArchivoEventos))
+            {
+                if (linea.StartsWith("sincronizado="))
+                {
+                    UltimaSincronizacion = DateTime.ParseExact(linea.Substring(13), "yyyyMMddHHmm", inv);
+                    continue;
+                }
+                string[] p = linea.Split('\t');
+                if (p.Length < 6) continue;
+                EventoCalendario e = new EventoCalendario();
+                e.Uid = p[0];
+                e.Inicio = DateTime.ParseExact(p[1], "yyyyMMddHHmm", inv);
+                e.Fin = DateTime.ParseExact(p[2], "yyyyMMddHHmm", inv);
+                e.TodoElDia = p[3] == "1";
+                e.Fuente = p[4];
+                e.Titulo = p[5];
+                l.Add(e);
+            }
+            Eventos = l;
+        }
+        catch { }
+    }
+
+    // Quita los eventos de calendarios que ya no están en la configuración (al eliminar una sincronización),
+    // sin volver a descargar los demás.
+    public void PodarEventos()
+    {
+        List<string> nombres = new List<string>();
+        foreach (ConexionCalendario c in op.Calendarios) nombres.Add(c.Nombre);
+        int antes = Eventos.Count;
+        Eventos = Eventos.FindAll(delegate(EventoCalendario e) { return nombres.Contains(e.Fuente); });
+        if (Eventos.Count == antes && op.Calendarios.Count > 0) return;
+        if (op.Calendarios.Count == 0) { UltimaSincronizacion = null; ErrorCalendario = null; }
+        GuardarEventos();
+        if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
+    }
+
+    // Descarga los calendarios en segundo plano (solo cuando se pulsa "Sincronizar calendario")
+    // y, al terminar, avisa con CalendarioActualizado.
+    public void SincronizarCalendarios()
+    {
+        if (sincronizando || !IsHandleCreated) return;
+        List<ConexionCalendario> conexiones = new List<ConexionCalendario>();
+        foreach (ConexionCalendario c in op.Calendarios) conexiones.Add(c.Copia());
+        if (conexiones.Count == 0)
+        {
+            Eventos = new List<EventoCalendario>();
+            ErrorCalendario = null;
+            UltimaSincronizacion = null;
+            GuardarEventos();
+            if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
+            return;
+        }
+        sincronizando = true;
+        if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            List<EventoCalendario> todos = new List<EventoCalendario>();
+            List<string> errores = new List<string>();
+            DateTime desde = DateTime.Today, hasta = DateTime.Today.AddDays(8);
+            foreach (ConexionCalendario c in conexiones)
+            {
+                try { todos.AddRange(ICal.Descargar(c.Url, c.Nombre, desde, hasta)); }
+                catch (Exception ex) { errores.Add(c.Nombre + ": " + ex.Message); }
+            }
+            todos.Sort(delegate(EventoCalendario a, EventoCalendario b) { return a.Inicio.CompareTo(b.Inicio); });
+            try
+            {
+                BeginInvoke(new MethodInvoker(delegate
+                {
+                    Eventos = todos;
+                    ErrorCalendario = errores.Count > 0 ? string.Join("\n", errores.ToArray()) : null;
+                    UltimaSincronizacion = DateTime.Now;
+                    sincronizando = false;
+                    GuardarEventos();
+                    if (CalendarioActualizado != null) CalendarioActualizado(this, EventArgs.Empty);
+                }));
+            }
+            catch { } // la app se cerró mientras se descargaba
+        });
+    }
 
     void VigilarAlarmas()
     {
         DateTime ahora = DateTime.Now;
         if (AlarmaSonando && (ahora - inicioAlarma).TotalMinutes >= 2) DetenerAlarma(); // se apaga sola a los 2 minutos
+
+        // Aviso de los eventos del calendario, unos minutos antes de que empiecen.
+        // (Los calendarios solo se descargan al pulsar "Sincronizar calendario"; aquí se usan los ya guardados.)
+        if (op.AvisoCalendario > 0)
+            foreach (EventoCalendario e in Eventos)
+            {
+                if (e.TodoElDia || op.EventosSilenciados.Contains(e.Clave)) continue;
+                DateTime aviso = e.Inicio.AddMinutes(-op.AvisoCalendario);
+                if (aviso.Date != ahora.Date || aviso.Hour != ahora.Hour || aviso.Minute != ahora.Minute) continue;
+                if (alarmasDisparadas.Add("calendario|" + e.Clave)) SonarAlarma(e.Inicio.ToString("HH:mm"), e.Titulo);
+            }
 
         foreach (Alarma a in op.Alarmas)
         {
@@ -1284,7 +1802,14 @@ class Overlay : Form
     // Muestra el despertador animado en cada pantalla del reloj y, si está activado, suena.
     public void SonarAlarma(string hora)
     {
+        SonarAlarma(hora, "");
+    }
+
+    // titulo: el del evento del calendario (o vacío para las alarmas normales).
+    public void SonarAlarma(string hora, string titulo)
+    {
         horaAlarma = hora;
+        tituloAlarma = titulo ?? "";
         inicioAlarma = DateTime.Now;
         if (!AlarmaSonando)
         {
@@ -1330,7 +1855,7 @@ class Overlay : Form
         IntPtr h;
         using (Bitmap bmp = new Bitmap(s.Width, s.Height, PixelFormat.Format32bppArgb))
         {
-            using (Graphics g = Graphics.FromImage(bmp)) Reloj.DibujarDespertador(g, op, DateTime.Now, angulo, pulso, horaAlarma);
+            using (Graphics g = Graphics.FromImage(bmp)) Reloj.DibujarDespertador(g, op, DateTime.Now, angulo, pulso, horaAlarma, tituloAlarma);
             h = bmp.GetHbitmap(Color.FromArgb(0));
         }
         try

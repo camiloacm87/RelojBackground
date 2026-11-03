@@ -150,6 +150,15 @@ static class Dwm
 {
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int atributo, ref int valor, int tamano);
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    static extern int SetWindowTheme(IntPtr hwnd, string app, string id);
+
+    // Barras de desplazamiento oscuras en modo oscuro (Windows 10 1809 o superior).
+    public static void TemaBarras(IntPtr hwnd)
+    {
+        try { SetWindowTheme(hwnd, Tema.Oscuro ? "DarkMode_Explorer" : "Explorer", null); } catch { }
+    }
 }
 
 // ---------- Controles propios ----------
@@ -844,6 +853,314 @@ class VentanaRango : Form
     }
 }
 
+// Botón dividido: la parte izquierda hace la acción principal y la flecha de la derecha abre un menú
+// con más opciones (las crea la función Opciones cada vez que se abre).
+class BotonDividido : ControlModerno
+{
+    const int ANCHO_FLECHA = 30;
+    public event EventHandler Principal;
+    public Func<ToolStripItem[]> Opciones;
+    int zonaEncima = -1; // 0 = botón, 1 = flecha
+
+    public BotonDividido(string texto)
+    {
+        Text = texto;
+        Size = new Size(TextRenderer.MeasureText(texto, Tema.Normal).Width + 28 + ANCHO_FLECHA, 32);
+    }
+
+    int Zona(int x) { return x >= Width - ANCHO_FLECHA ? 1 : 0; }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        int z = Zona(e.X);
+        if (z != zonaEncima) { zonaEncima = z; Invalidate(); }
+    }
+
+    protected override void OnMouseLeave(EventArgs e) { zonaEncima = -1; base.OnMouseLeave(e); }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Left || !Enabled || !ClientRectangle.Contains(e.Location)) return;
+        if (Zona(e.X) == 1) AbrirMenu();
+        else if (Principal != null) Principal(this, EventArgs.Empty);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Space && Principal != null) Principal(this, EventArgs.Empty);
+        if (e.Alt && e.KeyCode == Keys.Down) AbrirMenu();
+        base.OnKeyDown(e);
+    }
+
+    public void AbrirMenu()
+    {
+        if (Opciones == null) return;
+        ContextMenuStrip menu = new ContextMenuStrip();
+        menu.Renderer = new MenuTema();
+        menu.Font = Tema.Normal;
+        menu.ShowImageMargin = false;
+        menu.ShowCheckMargin = true;
+        menu.Items.AddRange(Opciones());
+        foreach (ToolStripItem it in menu.Items)
+        {
+            it.Padding = new Padding(0, 3, 0, 3);
+            ToolStripMenuItem mi = it as ToolStripMenuItem;
+            if (mi != null && mi.HasDropDownItems)
+            {
+                ((ToolStripDropDownMenu)mi.DropDown).ShowImageMargin = false;
+                ((ToolStripDropDownMenu)mi.DropDown).ShowCheckMargin = true;
+            }
+        }
+        menu.Closed += delegate { BeginInvoke(new MethodInvoker(menu.Dispose)); };
+        menu.Show(this, new Point(Width - menu.PreferredSize.Width, Height + 2));
+    }
+
+    protected override void Pintar(Graphics g)
+    {
+        RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        Tema.Rellenar(g, r, 6, Tema.Relleno, Tema.Borde, 1);
+        if (zonaEncima >= 0)
+        {
+            RectangleF z = zonaEncima == 0 ? new RectangleF(1.5f, 1.5f, Width - ANCHO_FLECHA - 2.5f, Height - 3.5f)
+                                           : new RectangleF(Width - ANCHO_FLECHA, 1.5f, ANCHO_FLECHA - 1.5f, Height - 3.5f);
+            Tema.Rellenar(g, z, 5, pulsado ? Tema.Borde : Tema.RellenoHover, Color.Empty, 1);
+        }
+        using (Pen sep = new Pen(Tema.Borde)) g.DrawLine(sep, Width - ANCHO_FLECHA, 6, Width - ANCHO_FLECHA, Height - 6);
+        TextoCentrado(g, Text, Font, new Rectangle(0, 0, Width - ANCHO_FLECHA, Height), Enabled ? Tema.Texto : Tema.Texto2);
+        using (Pen p = new Pen(Tema.Texto2, 1.6f))
+        {
+            float cx = Width - ANCHO_FLECHA / 2f, cy = Height / 2f;
+            g.DrawLines(p, new PointF[] { new PointF(cx - 4, cy - 2), new PointF(cx, cy + 2), new PointF(cx + 4, cy - 2) });
+        }
+    }
+}
+
+// Casilla de texto con borde redondeado (para escribir nombres y enlaces).
+class MarcoTexto : ControlModerno
+{
+    public readonly TextBox Caja = new TextBox();
+
+    public MarcoTexto()
+    {
+        Size = new Size(300, 32);
+        Cursor = Cursors.IBeam;
+        Caja.BorderStyle = BorderStyle.None;
+        Caja.BackColor = Tema.Relleno;
+        Caja.ForeColor = Tema.Texto;
+        Caja.Font = Tema.Normal;
+        Caja.GotFocus += delegate { Invalidate(); };
+        Caja.LostFocus += delegate { Invalidate(); };
+        Controls.Add(Caja);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
+    }
+
+    public override string Text { get { return Caja.Text; } set { Caja.Text = value; } }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        int h = Caja.PreferredHeight;
+        Caja.SetBounds(10, (Height - h) / 2, Width - 20, h);
+    }
+
+    protected override void OnClick(EventArgs e) { Caja.Focus(); base.OnClick(e); }
+
+    protected override void Pintar(Graphics g)
+    {
+        RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        Tema.Rellenar(g, r, 5, Tema.Relleno, Caja.Focused ? Tema.Acento : Tema.Borde, 1);
+        if (Caja.Focused) using (Pen p = new Pen(Tema.Acento, 2)) g.DrawLine(p, 5, Height - 1.5f, Width - 6, Height - 1.5f);
+    }
+}
+
+// Recuadro de solo lectura con la hora de un evento del calendario (mismo aspecto que el selector de hora).
+class CajaHora : ControlModerno
+{
+    public CajaHora(string texto) { Text = texto; Size = new Size(120, 40); Cursor = Cursors.Default; TabStop = false; }
+
+    protected override void Pintar(Graphics g)
+    {
+        Tema.Rellenar(g, new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), 6, Tema.Relleno, Tema.Borde, 1);
+        TextoCentrado(g, Text, Text.Length <= 5 ? Tema.Grande : Tema.Normal, ClientRectangle, Tema.Texto);
+    }
+}
+
+// Ventana para conectar un calendario: servicio, instrucciones para obtener el enlace iCal privado,
+// nombre y enlace. Al pulsar "Conectar" lo descarga para comprobar que funciona.
+class VentanaConectar : Form
+{
+    static readonly string[] PASOS = {
+        "En Google Calendar (en la web): ⚙ Configuración → en «Configuración de mis calendarios» elige el calendario → " +
+        "«Integrar el calendario» → copia la «Dirección secreta en formato iCal» (termina en basic.ics).",
+        "En Outlook (en la web): ⚙ Configuración → Calendario → Calendarios compartidos → «Publicar un calendario»: " +
+        "elige el calendario y «Puede ver todos los detalles» → Publicar → copia el vínculo ICS.",
+        "En el iPhone o la Mac, app Calendario: toca ⓘ junto al calendario → activa «Calendario público» → " +
+        "copia el enlace (empieza por webcal://).",
+        "Pega el enlace en formato iCal (.ics) de tu calendario. También sirve uno que empiece por webcal://."
+    };
+    static readonly string[] PAGINAS = {
+        "https://calendar.google.com/calendar/r/settings",
+        "https://outlook.live.com/calendar/0/options/calendar/SharedCalendars",
+        "", ""
+    };
+
+    readonly Segmentado servicio = new Segmentado(ConexionCalendario.SERVICIOS);
+    readonly Label pasos = new Label(), estado = new Label();
+    readonly MarcoTexto nombre = new MarcoTexto(), enlace = new MarcoTexto();
+    readonly BotonModerno abrir = new BotonModerno("Abrir la página", false), conectar = new BotonModerno("Conectar", true),
+                          cancelar = new BotonModerno("Cancelar", false);
+    readonly List<string> nombresUsados;
+    public ConexionCalendario Resultado;
+    public int EventosEncontrados;
+    bool nombreEditado;
+
+    public VentanaConectar(List<string> usados)
+    {
+        nombresUsados = usados;
+        Text = "Conectar calendario";
+        Icon = Iconos.Grande;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = MinimizeBox = false;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Tema.Fondo;
+        ForeColor = Tema.Texto;
+        Font = Tema.Normal;
+        AutoScaleDimensions = new SizeF(96f, 96f);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(560, 430);
+
+        Etiqueta(new Label(), "Servicio", 24, 20, 200, 22, Tema.Titulo, Tema.Texto);
+        servicio.Fondo = Tema.Fondo;
+        servicio.SetBounds(24, 46, 512, 34);
+        servicio.Indice = 0;
+        servicio.Cambio += delegate { ElegirServicio(); };
+        Controls.Add(servicio);
+
+        Etiqueta(pasos, "", 24, 92, 512, 60, Tema.Normal, Tema.Texto2);
+        abrir.Fondo = Tema.Fondo;
+        abrir.SetBounds(24, 156, 150, 30);
+        abrir.Click += delegate
+        {
+            string url = PAGINAS[servicio.Indice];
+            if (url != "") try { System.Diagnostics.Process.Start(url); } catch { }
+        };
+        Controls.Add(abrir);
+
+        Etiqueta(new Label(), "Nombre", 24, 204, 200, 22, Tema.Titulo, Tema.Texto);
+        nombre.Fondo = Tema.Fondo;
+        nombre.SetBounds(24, 230, 512, 32);
+        nombre.Caja.TextChanged += delegate { if (nombre.Caja.Focused) nombreEditado = true; };
+        Controls.Add(nombre);
+
+        Etiqueta(new Label(), "Enlace iCal (privado)", 24, 276, 300, 22, Tema.Titulo, Tema.Texto);
+        enlace.Fondo = Tema.Fondo;
+        enlace.SetBounds(24, 302, 512, 32);
+        enlace.Caja.TextChanged += delegate { estado.Text = ""; };
+        Controls.Add(enlace);
+
+        Etiqueta(estado, "El enlace funciona como una contraseña: solo se guarda en esta PC.", 24, 340, 512, 36, Tema.Pequena, Tema.Texto2);
+
+        conectar.Fondo = cancelar.Fondo = Tema.Fondo;
+        conectar.SetBounds(426, 382, 110, 34);
+        cancelar.SetBounds(306, 382, 110, 34);
+        conectar.Click += delegate { Conectar(); };
+        cancelar.Click += delegate { DialogResult = DialogResult.Cancel; };
+        Controls.Add(conectar);
+        Controls.Add(cancelar);
+        AcceptButton = conectar;
+        CancelButton = cancelar;
+
+        ElegirServicio();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Tema.AplicarVentana(this);
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        enlace.Caja.Focus();
+    }
+
+    Label Etiqueta(Label l, string texto, int x, int y, int w, int h, Font f, Color c)
+    {
+        l.Text = texto;
+        l.Font = f;
+        l.ForeColor = c;
+        l.BackColor = Tema.Fondo;
+        l.SetBounds(x, y, w, h);
+        Controls.Add(l);
+        return l;
+    }
+
+    void ElegirServicio()
+    {
+        int i = servicio.Indice;
+        pasos.Text = PASOS[i];
+        abrir.Visible = PAGINAS[i] != "";
+        abrir.Text = i == 0 ? "Abrir Google Calendar" : "Abrir Outlook";
+        abrir.Width = TextRenderer.MeasureText(abrir.Text, Tema.Normal).Width + 32;
+        if (!nombreEditado) nombre.Text = NombreLibre(ConexionCalendario.SERVICIOS[i] == "Otro" ? "Calendario" : ConexionCalendario.SERVICIOS[i]);
+    }
+
+    // "Google", "Google 2", "Google 3"…
+    string NombreLibre(string base_)
+    {
+        string n = base_;
+        for (int k = 2; nombresUsados.Contains(n); k++) n = base_ + " " + k;
+        return n;
+    }
+
+    void Conectar()
+    {
+        string url = enlace.Text.Trim(), nom = nombre.Text.Trim();
+        if (url == "") { Error("Pega el enlace iCal del calendario."); return; }
+        if (nom == "") nom = NombreLibre(ConexionCalendario.SERVICIOS[servicio.Indice]);
+        if (nombresUsados.Contains(nom)) { Error("Ya hay un calendario llamado «" + nom + "». Elige otro nombre."); return; }
+
+        conectar.Enabled = cancelar.Enabled = false;
+        estado.ForeColor = Tema.Texto2;
+        estado.Text = "Conectando…";
+        Cursor = Cursors.WaitCursor;
+        System.Threading.ThreadPool.QueueUserWorkItem(delegate
+        {
+            string error = null;
+            int n = 0;
+            try { n = ICal.Descargar(url, nom, DateTime.Today, DateTime.Today.AddDays(8)).Count; }
+            catch (Exception ex) { error = ex.Message; }
+            try
+            {
+                BeginInvoke(new MethodInvoker(delegate
+                {
+                    Cursor = Cursors.Default;
+                    conectar.Enabled = cancelar.Enabled = true;
+                    if (error != null) { Error("No se pudo conectar: " + error); return; }
+                    Resultado = new ConexionCalendario();
+                    Resultado.Servicio = ConexionCalendario.SERVICIOS[servicio.Indice];
+                    Resultado.Nombre = nom;
+                    Resultado.Url = ICal.Normalizar(url);
+                    EventosEncontrados = n;
+                    DialogResult = DialogResult.OK;
+                }));
+            }
+            catch { } // la ventana se cerró
+        });
+    }
+
+    void Error(string texto)
+    {
+        estado.ForeColor = Tema.Error;
+        estado.Text = texto;
+    }
+}
+
 // Tarjeta con fondo redondeado; si AltoFila > 0 dibuja separadores entre filas iguales,
 // y además dibuja los de la lista Separadores (para filas de distinta altura).
 class Tarjeta : Panel
@@ -1240,8 +1557,11 @@ class Configuracion : Form
     readonly Segmentado pestanas = new Segmentado("Apariencia", "Alarmas", "Cronómetro", "Atajos");
     readonly Panel pagApariencia = new Panel(), pagAlarmas = new Panel(), pagCrono = new Panel(), pagAtajos = new Panel();
     const int PAG_APARIENCIA = 0, PAG_ALARMAS = 1, PAG_CRONO = 2, PAG_ATAJOS = 3;
-    readonly Tarjeta tarjetaAlarmas = new Tarjeta(), tarjetaCrono = new Tarjeta();
-    readonly Label lSinAlarmas = new Label(), lCrono = new Label();
+    readonly Tarjeta tarjetaAlarmas = new Tarjeta(), tarjetaCrono = new Tarjeta(), tarjetaEventos = new Tarjeta();
+    readonly Label lSinAlarmas = new Label(), lCrono = new Label(), lCalTitulo = new Label(), lCalEstado = new Label();
+    readonly Panel listaAlarmas = new Panel(); // alarmas + eventos del calendario, con barra de desplazamiento
+    readonly BotonDividido bSincronizar = new BotonDividido("Sincronizar calendario");
+    const int ANCHO_LISTA = 532; // deja sitio para la barra de desplazamiento
     readonly Chip chSonido = new Chip("Sonido");
     readonly BotonModerno bAgregar = new BotonModerno("+  Agregar alarma", false),
                           bCrono = new BotonModerno("Iniciar", true), bReiniciar = new BotonModerno("Reiniciar", false);
@@ -1533,25 +1853,216 @@ class Configuracion : Form
             ConstruirAlarmas();
         };
         pg.Controls.Add(bAgregar);
+
+        // Sincronizar calendario ▾ (la flecha abre: sincronizar, conectar otro, aviso y eliminar sincronización)
+        bSincronizar.Fondo = Tema.Fondo;
+        bSincronizar.Location = new Point(bAgregar.Left - 8 - bSincronizar.Width, 0);
+        bSincronizar.Principal += delegate
+        {
+            if (op.Calendarios.Count == 0) ConectarCalendario();
+            else overlay.SincronizarCalendarios();
+        };
+        bSincronizar.Opciones = OpcionesCalendario;
+        ayuda.SetToolTip(bSincronizar, "Cargar los eventos de tu calendario (Google, Outlook, iCloud…)");
+        pg.Controls.Add(bSincronizar);
+
+        // Lista con desplazamiento: alarmas y, debajo, los eventos del calendario
+        listaAlarmas.SetBounds(0, 42, 550, 432);
+        listaAlarmas.AutoScroll = true;
+        listaAlarmas.BackColor = Tema.Fondo;
+        listaAlarmas.HandleCreated += delegate { Dwm.TemaBarras(listaAlarmas.Handle); };
+        pg.Controls.Add(listaAlarmas);
+        listaAlarmas.Controls.Add(tarjetaAlarmas);
+        lSinAlarmas.TextAlign = ContentAlignment.MiddleLeft;
+        Etiqueta(tarjetaAlarmas, lSinAlarmas, "No hay alarmas. Pulsa «Agregar alarma» para crear una.",
+                 16, 1, 500, ALTO_ALARMA - 2, Tema.Normal, Tema.Texto2, Tema.Superficie);
+        Etiqueta(listaAlarmas, lCalTitulo, "Del calendario", 0, 0, ANCHO_LISTA, 22, Tema.Titulo, Tema.Texto, Tema.Fondo);
+        Etiqueta(listaAlarmas, lCalEstado, "", 0, 0, ANCHO_LISTA, 20, Tema.Pequena, Tema.Texto2, Tema.Fondo);
+        lCalEstado.AutoEllipsis = true;
+        listaAlarmas.Controls.Add(tarjetaEventos);
+
+        // Abajo: sonido y probar
         BotonModerno probar = new BotonModerno("Probar", false);
         probar.Fondo = Tema.Fondo;
-        probar.SetBounds(bAgregar.Left - 8 - 90, 0, 90, 32);
+        probar.SetBounds(550 - 90, 484, 90, 32);
         probar.Click += delegate { overlay.SonarAlarma(DateTime.Now.ToString("HH:mm")); };
         ayuda.SetToolTip(probar, "Hacer sonar la alarma ahora");
         pg.Controls.Add(probar);
         chSonido.Fondo = Tema.Fondo;
-        chSonido.Location = new Point(probar.Left - 8 - chSonido.Width, 1);
+        chSonido.Location = new Point(probar.Left - 8 - chSonido.Width, 485);
         chSonido.Cambio += delegate { if (!cargando) op.SonidoAlarma = chSonido.Marcado; };
         ayuda.SetToolTip(chSonido, "Además del despertador animado, suena un pitido");
         pg.Controls.Add(chSonido);
 
-        pg.Controls.Add(tarjetaAlarmas);
-        lSinAlarmas.TextAlign = ContentAlignment.MiddleLeft;
-        Etiqueta(tarjetaAlarmas, lSinAlarmas, "No hay alarmas. Pulsa «Agregar alarma» para crear una.",
-                 16, 1, 500, ALTO_ALARMA - 2, Tema.Normal, Tema.Texto2, Tema.Superficie);
-
+        overlay.CalendarioActualizado += CalendarioActualizado;
         ConstruirAlarmas();
     }
+
+    void CalendarioActualizado(object sender, EventArgs e)
+    {
+        if (!IsDisposed) ConstruirEventos();
+    }
+
+    // Menú de la flecha de "Sincronizar calendario".
+    ToolStripItem[] OpcionesCalendario()
+    {
+        List<ToolStripItem> l = new List<ToolStripItem>();
+        int n = op.Calendarios.Count;
+        if (n > 0) l.Add(Opcion("Sincronizar ahora", delegate { overlay.SincronizarCalendarios(); }));
+        l.Add(Opcion(n > 0 ? "Conectar otro calendario…" : "Conectar un calendario…", delegate { ConectarCalendario(); }));
+        if (n == 0) return l.ToArray();
+
+        l.Add(new ToolStripSeparator());
+        ToolStripMenuItem aviso = new ToolStripMenuItem("Avisar antes de cada evento");
+        int[] minutos = { 0, 5, 10, 15, 30, 60 };
+        foreach (int m in minutos)
+        {
+            int k = m;
+            ToolStripMenuItem it = Opcion(m == 0 ? "Sin aviso" : m == 60 ? "1 hora antes" : m + " minutos antes", delegate
+            {
+                op.AvisoCalendario = k;
+                ConstruirEventos();
+            });
+            it.Checked = op.AvisoCalendario == m;
+            it.Padding = new Padding(0, 3, 0, 3);
+            aviso.DropDownItems.Add(it);
+        }
+        aviso.DropDown.Renderer = new MenuTema();
+        l.Add(aviso);
+
+        l.Add(new ToolStripSeparator());
+        foreach (ConexionCalendario c in op.Calendarios)
+        {
+            ConexionCalendario esta = c;
+            l.Add(Opcion("Eliminar sincronización · " + c.Nombre, delegate { EliminarCalendarios(esta); }));
+        }
+        if (n > 1) l.Add(Opcion("Eliminar todas las sincronizaciones", delegate { EliminarCalendarios(null); }));
+        return l.ToArray();
+    }
+
+    static ToolStripMenuItem Opcion(string texto, EventHandler accion)
+    {
+        ToolStripMenuItem it = new ToolStripMenuItem(texto);
+        it.Click += accion;
+        return it;
+    }
+
+    void ConectarCalendario()
+    {
+        List<string> usados = new List<string>();
+        foreach (ConexionCalendario c in op.Calendarios) usados.Add(c.Nombre);
+        using (VentanaConectar v = new VentanaConectar(usados))
+        {
+            if (v.ShowDialog(this) != DialogResult.OK || v.Resultado == null) return;
+            op.Calendarios.Add(v.Resultado);
+        }
+        overlay.SincronizarCalendarios();
+        ConstruirEventos();
+    }
+
+    // Quita un calendario (o todos, si es null) y sus eventos de la lista.
+    void EliminarCalendarios(ConexionCalendario c)
+    {
+        if (c == null) op.Calendarios.Clear();
+        else op.Calendarios.Remove(c);
+        overlay.PodarEventos();
+        ConstruirEventos();
+    }
+
+    // Sección "Del calendario": estado de la sincronización y eventos de los próximos 7 días.
+    void ConstruirEventos()
+    {
+        tarjetaEventos.SuspendLayout();
+        for (int i = tarjetaEventos.Controls.Count - 1; i >= 0; i--)
+        {
+            Control c = tarjetaEventos.Controls[i];
+            tarjetaEventos.Controls.RemoveAt(i);
+            c.Dispose();
+        }
+        tarjetaEventos.Separadores.Clear();
+
+        bool hay = op.Calendarios.Count > 0;
+        lCalTitulo.Visible = lCalEstado.Visible = tarjetaEventos.Visible = hay;
+        bSincronizar.Enabled = !overlay.Sincronizando;
+        if (!hay) { tarjetaEventos.ResumeLayout(); return; }
+
+        List<string> nombres = new List<string>();
+        foreach (ConexionCalendario c in op.Calendarios) nombres.Add(c.Nombre);
+        lCalTitulo.Text = "Del calendario · " + string.Join(", ", nombres.ToArray());
+
+        DateTime ahora = DateTime.Now, limite = DateTime.Today.AddDays(7);
+        List<EventoCalendario> eventos = overlay.Eventos.FindAll(delegate(EventoCalendario e)
+        {
+            return e.Fin > ahora && e.Inicio < limite && nombres.Contains(e.Fuente);
+        });
+        if (eventos.Count > 30) eventos.RemoveRange(30, eventos.Count - 30);
+
+        if (overlay.Sincronizando) { lCalEstado.ForeColor = Tema.Texto2; lCalEstado.Text = "Sincronizando…"; }
+        else if (overlay.ErrorCalendario != null) { lCalEstado.ForeColor = Tema.Error; lCalEstado.Text = "No se pudo sincronizar · " + overlay.ErrorCalendario.Replace("\n", " · "); }
+        else if (!overlay.UltimaSincronizacion.HasValue) { lCalEstado.ForeColor = Tema.Texto2; lCalEstado.Text = "Pulsa «Sincronizar calendario» para cargar los eventos."; }
+        else
+        {
+            DateTime u = overlay.UltimaSincronizacion.Value;
+            lCalEstado.ForeColor = Tema.Texto2;
+            lCalEstado.Text = "Sincronizado " + (u.Date == DateTime.Today ? "hoy" : u.Date == DateTime.Today.AddDays(-1) ? "ayer" : "el " + u.ToString("d MMM", ES).Replace(".", "")) +
+                              " a las " + u.ToString("HH:mm") + " · " + eventos.Count + (eventos.Count == 1 ? " evento" : " eventos") + " en los próximos 7 días" +
+                              (op.AvisoCalendario > 0 ? " · aviso " + (op.AvisoCalendario == 60 ? "1 hora" : op.AvisoCalendario + " min") + " antes" : " · sin aviso");
+        }
+
+        const int alto = 52;
+        int y = 0;
+        if (eventos.Count == 0)
+        {
+            Label vacio = new Label();
+            vacio.TextAlign = ContentAlignment.MiddleLeft;
+            Etiqueta(tarjetaEventos, vacio, overlay.UltimaSincronizacion.HasValue ? "No hay eventos en los próximos 7 días." : "Todavía no se han cargado los eventos.",
+                     16, 1, 480, alto - 2, Tema.Normal, Tema.Texto2, Tema.Superficie);
+            y = alto;
+        }
+        foreach (EventoCalendario e in eventos)
+        {
+            CajaHora hora = new CajaHora(e.TodoElDia ? "Todo el día" : e.Inicio.ToString("HH:mm"));
+            hora.Location = new Point(14, y + (alto - hora.Height) / 2);
+            hora.Fondo = Tema.Superficie;
+            tarjetaEventos.Controls.Add(hora);
+
+            Label titulo = new Label(), detalle = new Label();
+            titulo.AutoEllipsis = detalle.AutoEllipsis = true;
+            Etiqueta(tarjetaEventos, titulo, e.Titulo, hora.Right + 12, y + 7, 300, 20, Tema.Normal, Tema.Texto, Tema.Superficie);
+            string dia = e.Inicio.Date == DateTime.Today ? "Hoy" : e.Inicio.Date == DateTime.Today.AddDays(1) ? "Mañana"
+                       : Mayuscula(e.Inicio.ToString("dddd d MMM", ES).Replace(".", ""));
+            string horas = e.TodoElDia ? "" : " · " + e.Inicio.ToString("HH:mm") + " – " + e.Fin.ToString("HH:mm");
+            Etiqueta(tarjetaEventos, detalle, dia + horas + " · " + e.Fuente, hora.Right + 12, y + 27, 300, 18, Tema.Pequena, Tema.Texto2, Tema.Superficie);
+
+            if (!e.TodoElDia && op.AvisoCalendario > 0)
+            {
+                string clave = e.Clave;
+                Interruptor avisar = new Interruptor();
+                avisar.Marcado = !op.EventosSilenciados.Contains(clave);
+                avisar.Fondo = Tema.Superficie;
+                avisar.Location = new Point(ANCHO_LISTA - 16 - avisar.Width, y + (alto - avisar.Height) / 2);
+                avisar.Cambio += delegate
+                {
+                    if (avisar.Marcado) op.EventosSilenciados.Remove(clave);
+                    else op.EventosSilenciados.Add(clave);
+                };
+                ayuda.SetToolTip(avisar, "Hacer sonar el despertador " + (op.AvisoCalendario == 60 ? "1 hora" : op.AvisoCalendario + " minutos") + " antes");
+                tarjetaEventos.Controls.Add(avisar);
+            }
+            y += alto;
+            if (e != eventos[eventos.Count - 1]) tarjetaEventos.Separadores.Add(y);
+        }
+
+        // (tarjetaAlarmas.Bottom ya tiene en cuenta cuánto se ha desplazado la lista)
+        lCalTitulo.SetBounds(0, tarjetaAlarmas.Bottom + 20, ANCHO_LISTA, 22);
+        lCalEstado.SetBounds(0, lCalTitulo.Bottom + 2, ANCHO_LISTA, 20);
+        tarjetaEventos.SetBounds(0, lCalEstado.Bottom + 6, ANCHO_LISTA, y + 2);
+        tarjetaEventos.ResumeLayout();
+        tarjetaEventos.Invalidate();
+    }
+
+    static readonly System.Globalization.CultureInfo ES = new System.Globalization.CultureInfo("es-ES");
+    static string Mayuscula(string s) { return s.Length > 0 ? char.ToUpper(s[0]) + s.Substring(1) : s; }
 
     // Rehace las filas de alarmas (al agregar, eliminar, cambiar cuándo suenan o cuando una suena y se desactiva).
     // Cada fila: hora · cuándo suena · interruptor · Eliminar; las de "Rango de fechas" llevan debajo el botón de fechas.
@@ -1569,7 +2080,7 @@ class Configuracion : Form
 
         int n = op.Alarmas.Count, y = 0;
         lSinAlarmas.Visible = n == 0;
-        tarjetaAlarmas.Width = 550;
+        tarjetaAlarmas.Width = ANCHO_LISTA;
         for (int i = 0; i < n; i++)
         {
             Alarma a = op.Alarmas[i];
@@ -1612,7 +2123,7 @@ class Configuracion : Form
 
             BotonModerno eliminar = new BotonModerno("Eliminar", false);
             eliminar.Size = new Size(90, 32);
-            eliminar.Location = new Point(550 - 16 - eliminar.Width, y + (ALTO_ALARMA - eliminar.Height) / 2);
+            eliminar.Location = new Point(ANCHO_LISTA - 16 - eliminar.Width, y + (ALTO_ALARMA - eliminar.Height) / 2);
             // Se rehace la lista después del clic: el botón pulsado se elimina con ella.
             eliminar.Click += delegate { op.Alarmas.Remove(a); BeginInvoke(new MethodInvoker(ConstruirAlarmas)); };
             Interruptor activa = new Interruptor();
@@ -1643,10 +2154,12 @@ class Configuracion : Form
             y += rango ? ALTO_ALARMA_RANGO : ALTO_ALARMA;
             if (i < n - 1) tarjetaAlarmas.Separadores.Add(y);
         }
-        tarjetaAlarmas.SetBounds(0, 42, 550, Math.Max(ALTO_ALARMA, y) + 2);
+        // Dentro de la lista con desplazamiento: AutoScrollPosition.Y es negativo si se ha bajado.
+        tarjetaAlarmas.SetBounds(0, listaAlarmas.AutoScrollPosition.Y, ANCHO_LISTA, Math.Max(ALTO_ALARMA, y) + 2);
         tarjetaAlarmas.ResumeLayout();
         tarjetaAlarmas.Invalidate();
         bAgregar.Enabled = n < MAX_ALARMAS;
+        ConstruirEventos(); // los eventos van debajo de las alarmas
     }
 
     // Al cambiar una alarma vuelve a quedar activa ("Solo hoy" pasa a ser el día de hoy).
@@ -1911,7 +2424,12 @@ class Configuracion : Form
     {
         refresco.Stop();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= PantallasCambiaron;
-        if (!guardado) op.CopiarDe(original); // Cancelar: se deshacen los cambios que se estaban probando
+        overlay.CalendarioActualizado -= CalendarioActualizado;
+        if (!guardado)
+        {
+            op.CopiarDe(original); // Cancelar: se deshacen los cambios que se estaban probando
+            overlay.PodarEventos(); // sin eventos de calendarios conectados y luego cancelados
+        }
         overlay.AtajosPausados = false;
         overlay.AplicarCambios();
         base.OnFormClosing(e);
