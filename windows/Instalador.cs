@@ -1,4 +1,4 @@
-// Instalador de RelojBackground para Windows (RelojBackground-Setup.exe).
+﻿// Instalador de RelojBackground para Windows (RelojBackground-Setup.exe).
 // Instala para el usuario actual, sin permisos de administrador, en %LOCALAPPDATA%\Programs\RelojBackground:
 // accesos en el menú Inicio y el escritorio, inicio con Windows y entrada en "Aplicaciones instaladas"
 // para poder desinstalarlo. El mismo .exe, con --desinstalar, quita todo.
@@ -14,7 +14,7 @@ using System.Windows.Forms;
 
 static class Instalador
 {
-    public const string VERSION = "2.1";
+    public const string VERSION = "2.2";
     const string CLAVE_DESINSTALAR = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + Program.NOMBRE;
     const string CLAVE_INICIO = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
